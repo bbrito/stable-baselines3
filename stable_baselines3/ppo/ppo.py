@@ -129,6 +129,8 @@ class PPO(OnPolicyAlgorithm):
         seed: Optional[int] = None,
         device: Union[th.device, str] = "auto",
         _init_setup_model: bool = True,
+        alpha: int = 1.0,
+        decay: int = 0.99,
     ):
 
         super(PPO, self).__init__(
@@ -157,8 +159,8 @@ class PPO(OnPolicyAlgorithm):
         self.clip_range = clip_range
         self.clip_range_vf = clip_range_vf
         self.target_kl = target_kl
-        self.gama = 1.0
-        self.decay = 0.99
+        self.alpha = alpha
+        self.decay = decay
 
         if expert_data is not None:
             if isinstance(expert_data, types.Transitions):
@@ -285,7 +287,7 @@ class PPO(OnPolicyAlgorithm):
                 _, alogprobs, _ = self.policy.evaluate_actions(obs_tensor, actions_tensor)
                 bcloss = -alogprobs.mean()
                 # action loss is weighted sum
-                loss = self.gama * bcloss + (1 - self.gama) * loss
+                loss = self.alpha * bcloss + (1 - self.alpha) * loss
                 # Multiply this coeff with decay factor
 
                 # Optimization step
@@ -303,7 +305,7 @@ class PPO(OnPolicyAlgorithm):
                 break
 
         self._n_updates += self.n_epochs
-        self.gama *= self.decay
+        self.alpha *= self.decay
         explained_var = explained_variance(self.rollout_buffer.returns.flatten(), self.rollout_buffer.values.flatten())
 
         # Logs
@@ -314,7 +316,7 @@ class PPO(OnPolicyAlgorithm):
         logger.record("train/clip_fraction", np.mean(clip_fractions))
         logger.record("train/loss", loss.item())
         logger.record("train/explained_variance", explained_var)
-        logger.record("train/gamma", self.gama)
+        logger.record("train/gamma", self.alpha)
         if hasattr(self.policy, "log_std"):
             logger.record("train/std", th.exp(self.policy.log_std).mean().item())
 
