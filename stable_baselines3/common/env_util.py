@@ -8,45 +8,16 @@ from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecEnv
 
 
-def unwrap_wrapper(env: gym.Env, wrapper_class: Type[gym.Wrapper]) -> Optional[gym.Wrapper]:
-    """
-    Retrieve a ``VecEnvWrapper`` object by recursively searching.
-
-    :param env: Environment to unwrap
-    :param wrapper_class: Wrapper to look for
-    :return: Environment unwrapped till ``wrapper_class`` if it has been wrapped with it
-    """
-    env_tmp = env
-    while isinstance(env_tmp, gym.Wrapper):
-        if isinstance(env_tmp, wrapper_class):
-            return env_tmp
-        env_tmp = env_tmp.env
-    return None
-
-
-def is_wrapped(env: Type[gym.Env], wrapper_class: Type[gym.Wrapper]) -> bool:
-    """
-    Check if a given environment has been wrapped with a given wrapper.
-
-    :param env: Environment to check
-    :param wrapper_class: Wrapper class to look for
-    :return: True if environment has been wrapped with ``wrapper_class``.
-    """
-    return unwrap_wrapper(env, wrapper_class) is not None
-
-
 def make_vec_env(
     env_id: Union[str, Type[gym.Env]],
     n_envs: int = 1,
     seed: Optional[int] = None,
     start_index: int = 0,
     monitor_dir: Optional[str] = None,
-    wrapper_class: Optional[Callable[[gym.Env], gym.Env]] = None,
+    wrapper_class: Optional[Callable] = None,
     env_kwargs: Optional[Dict[str, Any]] = None,
     vec_env_cls: Optional[Type[Union[DummyVecEnv, SubprocVecEnv]]] = None,
     vec_env_kwargs: Optional[Dict[str, Any]] = None,
-    monitor_kwargs: Optional[Dict[str, Any]] = None,
-    wrapper_kwargs: Optional[Dict[str, Any]] = None,
 ) -> VecEnv:
     """
     Create a wrapped, monitored ``VecEnv``.
@@ -65,14 +36,10 @@ def make_vec_env(
     :param env_kwargs: Optional keyword argument to pass to the env constructor
     :param vec_env_cls: A custom ``VecEnv`` class constructor. Default: None.
     :param vec_env_kwargs: Keyword arguments to pass to the ``VecEnv`` class constructor.
-    :param monitor_kwargs: Keyword arguments to pass to the ``Monitor`` class constructor.
-    :param wrapper_kwargs: Keyword arguments to pass to the ``Wrapper`` class constructor.
     :return: The wrapped environment
     """
     env_kwargs = {} if env_kwargs is None else env_kwargs
     vec_env_kwargs = {} if vec_env_kwargs is None else vec_env_kwargs
-    monitor_kwargs = {} if monitor_kwargs is None else monitor_kwargs
-    wrapper_kwargs = {} if wrapper_kwargs is None else wrapper_kwargs
 
     def make_env(rank):
         def _init():
@@ -89,10 +56,10 @@ def make_vec_env(
             # Create the monitor folder if needed
             if monitor_path is not None:
                 os.makedirs(monitor_dir, exist_ok=True)
-            env = Monitor(env, filename=monitor_path, **monitor_kwargs)
+            env = Monitor(env, filename=monitor_path)
             # Optionally, wrap the environment with the provided wrapper
             if wrapper_class is not None:
-                env = wrapper_class(env, **wrapper_kwargs)
+                env = wrapper_class(env)
             return env
 
         return _init
@@ -115,7 +82,6 @@ def make_atari_env(
     env_kwargs: Optional[Dict[str, Any]] = None,
     vec_env_cls: Optional[Union[DummyVecEnv, SubprocVecEnv]] = None,
     vec_env_kwargs: Optional[Dict[str, Any]] = None,
-    monitor_kwargs: Optional[Dict[str, Any]] = None,
 ) -> VecEnv:
     """
     Create a wrapped, monitored VecEnv for Atari.
@@ -132,7 +98,6 @@ def make_atari_env(
     :param env_kwargs: Optional keyword argument to pass to the env constructor
     :param vec_env_cls: A custom ``VecEnv`` class constructor. Default: None.
     :param vec_env_kwargs: Keyword arguments to pass to the ``VecEnv`` class constructor.
-    :param monitor_kwargs: Keyword arguments to pass to the ``Monitor`` class constructor.
     :return: The wrapped environment
     """
     if wrapper_kwargs is None:
@@ -152,5 +117,4 @@ def make_atari_env(
         env_kwargs=env_kwargs,
         vec_env_cls=vec_env_cls,
         vec_env_kwargs=vec_env_kwargs,
-        monitor_kwargs=monitor_kwargs,
     )

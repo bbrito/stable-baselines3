@@ -1,14 +1,13 @@
-from typing import Any, Dict, List, Optional, Tuple, Type, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, Type, Union
 
-import gym
 import numpy as np
 import torch as th
 from torch.nn import functional as F
 
-from stable_baselines3.common.buffers import ReplayBuffer
+from stable_baselines3.common import logger
 from stable_baselines3.common.noise import ActionNoise
 from stable_baselines3.common.off_policy_algorithm import OffPolicyAlgorithm
-from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedule
+from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback
 from stable_baselines3.common.utils import polyak_update
 from stable_baselines3.sac.policies import SACPolicy
 
@@ -37,16 +36,15 @@ class SAC(OffPolicyAlgorithm):
     :param batch_size: Minibatch size for each gradient update
     :param tau: the soft update coefficient ("Polyak update", between 0 and 1)
     :param gamma: the discount factor
-    :param train_freq: Update the model every ``train_freq`` steps. Alternatively pass a tuple of frequency and unit
-        like ``(5, "step")`` or ``(2, "episode")``.
-    :param gradient_steps: How many gradient steps to do after each rollout (see ``train_freq``)
+    :param train_freq: Update the model every ``train_freq`` steps. Set to `-1` to disable.
+    :param gradient_steps: How many gradient steps to do after each rollout
+        (see ``train_freq`` and ``n_episodes_rollout``)
         Set to ``-1`` means to do as many gradient steps as steps done in the environment
         during the rollout.
+    :param n_episodes_rollout: Update the model every ``n_episodes_rollout`` episodes.
+        Note that this cannot be used at the same time as ``train_freq``. Set to `-1` to disable.
     :param action_noise: the action noise type (None by default), this can help
         for hard exploration problem. Cf common.noise for the different action noise type.
-    :param replay_buffer_class: Replay buffer class to use (for instance ``HerReplayBuffer``).
-        If ``None``, it will be automatically selected.
-    :param replay_buffer_kwargs: Keyword arguments to pass to the replay buffer on creation.
     :param optimize_memory_usage: Enable a memory efficient variant of the replay buffer
         at a cost of more complexity.
         See https://github.com/DLR-RM/stable-baselines3/issues/37#issuecomment-637501195
@@ -76,17 +74,16 @@ class SAC(OffPolicyAlgorithm):
         self,
         policy: Union[str, Type[SACPolicy]],
         env: Union[GymEnv, str],
-        learning_rate: Union[float, Schedule] = 3e-4,
-        buffer_size: int = 1000000,  # 1e6
+        learning_rate: Union[float, Callable] = 3e-4,
+        buffer_size: int = int(1e6),
         learning_starts: int = 100,
         batch_size: int = 256,
         tau: float = 0.005,
         gamma: float = 0.99,
-        train_freq: Union[int, Tuple[int, str]] = 1,
+        train_freq: int = 1,
         gradient_steps: int = 1,
+        n_episodes_rollout: int = -1,
         action_noise: Optional[ActionNoise] = None,
-        replay_buffer_class: Optional[ReplayBuffer] = None,
-        replay_buffer_kwargs: Optional[Dict[str, Any]] = None,
         optimize_memory_usage: bool = False,
         ent_coef: Union[str, float] = "auto",
         target_update_interval: int = 1,
@@ -115,9 +112,8 @@ class SAC(OffPolicyAlgorithm):
             gamma,
             train_freq,
             gradient_steps,
+            n_episodes_rollout,
             action_noise,
-            replay_buffer_class=replay_buffer_class,
-            replay_buffer_kwargs=replay_buffer_kwargs,
             policy_kwargs=policy_kwargs,
             tensorboard_log=tensorboard_log,
             verbose=verbose,
@@ -128,7 +124,6 @@ class SAC(OffPolicyAlgorithm):
             sde_sample_freq=sde_sample_freq,
             use_sde_at_warmup=use_sde_at_warmup,
             optimize_memory_usage=optimize_memory_usage,
-            supported_action_spaces=(gym.spaces.Box),
         )
 
         self.target_entropy = target_entropy
@@ -226,20 +221,20 @@ class SAC(OffPolicyAlgorithm):
             with th.no_grad():
                 # Select action according to policy
                 next_actions, next_log_prob = self.actor.action_log_prob(replay_data.next_observations)
-                # Compute the next Q values: min over all critics targets
-                next_q_values = th.cat(self.critic_target(replay_data.next_observations, next_actions), dim=1)
-                next_q_values, _ = th.min(next_q_values, dim=1, keepdim=True)
+                # Compute the target Q value: min over all critics targets
+                targets = th.cat(self.critic_target(replay_data.next_observations, next_actions), dim=1)
+                target_q, _ = th.min(targets, dim=1, keepdim=True)
                 # add entropy term
-                next_q_values = next_q_values - ent_coef * next_log_prob.reshape(-1, 1)
+                target_q = target_q - ent_coef * next_log_prob.reshape(-1, 1)
                 # td error + entropy term
-                target_q_values = replay_data.rewards + (1 - replay_data.dones) * self.gamma * next_q_values
+                q_backup = replay_data.rewards + (1 - replay_data.dones) * self.gamma * target_q
 
-            # Get current Q-values estimates for each critic network
+            # Get current Q estimates for each critic network
             # using action from the replay buffer
-            current_q_values = self.critic(replay_data.observations, replay_data.actions)
+            current_q_estimates = self.critic(replay_data.observations, replay_data.actions)
 
             # Compute critic loss
-            critic_loss = 0.5 * sum([F.mse_loss(current_q, target_q_values) for current_q in current_q_values])
+            critic_loss = 0.5 * sum([F.mse_loss(current_q, q_backup) for current_q in current_q_estimates])
             critic_losses.append(critic_loss.item())
 
             # Optimize the critic
@@ -266,12 +261,12 @@ class SAC(OffPolicyAlgorithm):
 
         self._n_updates += gradient_steps
 
-        self.logger.record("train/n_updates", self._n_updates, exclude="tensorboard")
-        self.logger.record("train/ent_coef", np.mean(ent_coefs))
-        self.logger.record("train/actor_loss", np.mean(actor_losses))
-        self.logger.record("train/critic_loss", np.mean(critic_losses))
+        logger.record("train/n_updates", self._n_updates, exclude="tensorboard")
+        logger.record("train/ent_coef", np.mean(ent_coefs))
+        logger.record("train/actor_loss", np.mean(actor_losses))
+        logger.record("train/critic_loss", np.mean(critic_losses))
         if len(ent_coef_losses) > 0:
-            self.logger.record("train/ent_coef_loss", np.mean(ent_coef_losses))
+            logger.record("train/ent_coef_loss", np.mean(ent_coef_losses))
 
     def learn(
         self,
@@ -303,9 +298,9 @@ class SAC(OffPolicyAlgorithm):
 
     def _get_torch_save_params(self) -> Tuple[List[str], List[str]]:
         state_dicts = ["policy", "actor.optimizer", "critic.optimizer"]
+        saved_pytorch_variables = ["log_ent_coef"]
         if self.ent_coef_optimizer is not None:
-            saved_pytorch_variables = ["log_ent_coef"]
             state_dicts.append("ent_coef_optimizer")
         else:
-            saved_pytorch_variables = ["ent_coef_tensor"]
+            saved_pytorch_variables.append("ent_coef_tensor")
         return state_dicts, saved_pytorch_variables

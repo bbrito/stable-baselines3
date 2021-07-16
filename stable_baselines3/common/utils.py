@@ -3,7 +3,7 @@ import os
 import random
 from collections import deque
 from itertools import zip_longest
-from typing import Dict, Iterable, Optional, Union
+from typing import Callable, Iterable, Optional, Union
 
 import gym
 import numpy as np
@@ -15,14 +15,13 @@ try:
 except ImportError:
     SummaryWriter = None
 
-from stable_baselines3.common.logger import Logger, configure
-from stable_baselines3.common.type_aliases import GymEnv, Schedule, TensorDict, TrainFreq, TrainFrequencyUnit
+from stable_baselines3.common import logger
+from stable_baselines3.common.type_aliases import GymEnv
 
 
 def set_random_seed(seed: int, using_cuda: bool = False) -> None:
     """
-    Seed the different random generators.
-
+    Seed the different random generators
     :param seed:
     :param using_cuda:
     """
@@ -71,7 +70,7 @@ def update_learning_rate(optimizer: th.optim.Optimizer, learning_rate: float) ->
         param_group["lr"] = learning_rate
 
 
-def get_schedule_fn(value_schedule: Union[Schedule, float, int]) -> Schedule:
+def get_schedule_fn(value_schedule: Union[Callable, float]) -> Callable:
     """
     Transform (if needed) learning rate and clip range (for PPO)
     to callable.
@@ -89,7 +88,7 @@ def get_schedule_fn(value_schedule: Union[Schedule, float, int]) -> Schedule:
     return value_schedule
 
 
-def get_linear_fn(start: float, end: float, end_fraction: float) -> Schedule:
+def get_linear_fn(start: float, end: float, end_fraction: float) -> Callable:
     """
     Create a function that interpolates linearly between start and end
     between ``progress_remaining`` = 1 and ``progress_remaining`` = ``end_fraction``.
@@ -113,7 +112,7 @@ def get_linear_fn(start: float, end: float, end_fraction: float) -> Schedule:
     return func
 
 
-def constant_fn(val: float) -> Schedule:
+def constant_fn(val: float) -> Callable:
     """
     Create a function that returns a constant
     It is useful for learning rate schedule (to avoid code duplication)
@@ -168,27 +167,15 @@ def get_latest_run_id(log_path: Optional[str] = None, log_name: str = "") -> int
 
 
 def configure_logger(
-    verbose: int = 0,
-    tensorboard_log: Optional[str] = None,
-    tb_log_name: str = "",
-    reset_num_timesteps: bool = True,
-) -> Logger:
+    verbose: int = 0, tensorboard_log: Optional[str] = None, tb_log_name: str = "", reset_num_timesteps: bool = True
+) -> None:
     """
     Configure the logger's outputs.
 
     :param verbose: the verbosity level: 0 no output, 1 info, 2 debug
     :param tensorboard_log: the log location for tensorboard (if None, no logging)
     :param tb_log_name: tensorboard log
-    :param reset_num_timesteps:  Whether the ``num_timesteps`` attribute is reset or not.
-        It allows to continue a previous learning curve (``reset_num_timesteps=False``)
-        or start from t=0 (``reset_num_timesteps=True``, the default).
-    :return: The logger object
     """
-    save_path, format_strings = None, ["stdout"]
-
-    if tensorboard_log is not None and SummaryWriter is None:
-        raise ImportError("Trying to log data to tensorboard but tensorboard is not installed.")
-
     if tensorboard_log is not None and SummaryWriter is not None:
         latest_run_id = get_latest_run_id(tensorboard_log, tb_log_name)
         if not reset_num_timesteps:
@@ -196,12 +183,11 @@ def configure_logger(
             latest_run_id -= 1
         save_path = os.path.join(tensorboard_log, f"{tb_log_name}_{latest_run_id + 1}")
         if verbose >= 1:
-            format_strings = ["stdout", "tensorboard"]
+            logger.configure(save_path, ["stdout", "tensorboard"])
         else:
-            format_strings = ["tensorboard"]
+            logger.configure(save_path, ["tensorboard"])
     elif verbose == 0:
-        format_strings = [""]
-    return configure(save_path, format_strings=format_strings)
+        logger.configure(format_strings=[""])
 
 
 def check_for_correct_spaces(env: GymEnv, observation_space: gym.spaces.Space, action_space: gym.spaces.Space) -> None:
@@ -222,118 +208,6 @@ def check_for_correct_spaces(env: GymEnv, observation_space: gym.spaces.Space, a
         raise ValueError(f"Action spaces do not match: {action_space} != {env.action_space}")
 
 
-def is_vectorized_box_observation(observation: np.ndarray, observation_space: gym.spaces.Box) -> bool:
-    """
-    For box observation type, detects and validates the shape,
-    then returns whether or not the observation is vectorized.
-
-    :param observation: the input observation to validate
-    :param observation_space: the observation space
-    :return: whether the given observation is vectorized or not
-    """
-    if observation.shape == observation_space.shape:
-        return False
-    elif observation.shape[1:] == observation_space.shape:
-        return True
-    else:
-        raise ValueError(
-            f"Error: Unexpected observation shape {observation.shape} for "
-            + f"Box environment, please use {observation_space.shape} "
-            + "or (n_env, {}) for the observation shape.".format(", ".join(map(str, observation_space.shape)))
-        )
-
-
-def is_vectorized_discrete_observation(observation: np.ndarray, observation_space: gym.spaces.Discrete) -> bool:
-    """
-    For discrete observation type, detects and validates the shape,
-    then returns whether or not the observation is vectorized.
-
-    :param observation: the input observation to validate
-    :param observation_space: the observation space
-    :return: whether the given observation is vectorized or not
-    """
-    if observation.shape == ():  # A numpy array of a number, has shape empty tuple '()'
-        return False
-    elif len(observation.shape) == 1:
-        return True
-    else:
-        raise ValueError(
-            f"Error: Unexpected observation shape {observation.shape} for "
-            + "Discrete environment, please use (1,) or (n_env, 1) for the observation shape."
-        )
-
-
-def is_vectorized_multidiscrete_observation(observation: np.ndarray, observation_space: gym.spaces.MultiDiscrete) -> bool:
-    """
-    For multidiscrete observation type, detects and validates the shape,
-    then returns whether or not the observation is vectorized.
-
-    :param observation: the input observation to validate
-    :param observation_space: the observation space
-    :return: whether the given observation is vectorized or not
-    """
-    if observation.shape == (len(observation_space.nvec),):
-        return False
-    elif len(observation.shape) == 2 and observation.shape[1] == len(observation_space.nvec):
-        return True
-    else:
-        raise ValueError(
-            f"Error: Unexpected observation shape {observation.shape} for MultiDiscrete "
-            + f"environment, please use ({len(observation_space.nvec)},) or "
-            + f"(n_env, {len(observation_space.nvec)}) for the observation shape."
-        )
-
-
-def is_vectorized_multibinary_observation(observation: np.ndarray, observation_space: gym.spaces.MultiBinary) -> bool:
-    """
-    For multibinary observation type, detects and validates the shape,
-    then returns whether or not the observation is vectorized.
-
-    :param observation: the input observation to validate
-    :param observation_space: the observation space
-    :return: whether the given observation is vectorized or not
-    """
-    if observation.shape == (observation_space.n,):
-        return False
-    elif len(observation.shape) == 2 and observation.shape[1] == observation_space.n:
-        return True
-    else:
-        raise ValueError(
-            f"Error: Unexpected observation shape {observation.shape} for MultiBinary "
-            + f"environment, please use ({observation_space.n},) or "
-            + f"(n_env, {observation_space.n}) for the observation shape."
-        )
-
-
-def is_vectorized_dict_observation(observation: np.ndarray, observation_space: gym.spaces.Dict) -> bool:
-    """
-    For dict observation type, detects and validates the shape,
-    then returns whether or not the observation is vectorized.
-
-    :param observation: the input observation to validate
-    :param observation_space: the observation space
-    :return: whether the given observation is vectorized or not
-    """
-    for key, subspace in observation_space.spaces.items():
-        if observation[key].shape == subspace.shape:
-            return False
-
-    all_good = True
-
-    for key, subspace in observation_space.spaces.items():
-        if observation[key].shape[1:] != subspace.shape:
-            all_good = False
-            break
-
-    if all_good:
-        return True
-    else:
-        raise ValueError(
-            f"Error: Unexpected observation shape {observation.shape} for "
-            + f"Tuple environment, please use {(obs.shape for obs in observation_space.spaces)} "
-        )
-
-
 def is_vectorized_observation(observation: np.ndarray, observation_space: gym.spaces.Space) -> bool:
     """
     For every observation type, detects and validates the shape,
@@ -343,19 +217,51 @@ def is_vectorized_observation(observation: np.ndarray, observation_space: gym.sp
     :param observation_space: the observation space
     :return: whether the given observation is vectorized or not
     """
+    if isinstance(observation_space, gym.spaces.Box):
+        if observation.shape == observation_space.shape:
+            return False
+        elif observation.shape[1:] == observation_space.shape:
+            return True
+        else:
+            raise ValueError(
+                f"Error: Unexpected observation shape {observation.shape} for "
+                + f"Box environment, please use {observation_space.shape} "
+                + "or (n_env, {}) for the observation shape.".format(", ".join(map(str, observation_space.shape)))
+            )
+    elif isinstance(observation_space, gym.spaces.Discrete):
+        if observation.shape == ():  # A numpy array of a number, has shape empty tuple '()'
+            return False
+        elif len(observation.shape) == 1:
+            return True
+        else:
+            raise ValueError(
+                f"Error: Unexpected observation shape {observation.shape} for "
+                + "Discrete environment, please use (1,) or (n_env, 1) for the observation shape."
+            )
 
-    is_vec_obs_func_dict = {
-        gym.spaces.Box: is_vectorized_box_observation,
-        gym.spaces.Discrete: is_vectorized_discrete_observation,
-        gym.spaces.MultiDiscrete: is_vectorized_multidiscrete_observation,
-        gym.spaces.MultiBinary: is_vectorized_multibinary_observation,
-        gym.spaces.Dict: is_vectorized_dict_observation,
-    }
-
-    try:
-        is_vec_obs_func = is_vec_obs_func_dict[type(observation_space)]
-        return is_vec_obs_func(observation, observation_space)
-    except KeyError:
+    elif isinstance(observation_space, gym.spaces.MultiDiscrete):
+        if observation.shape == (len(observation_space.nvec),):
+            return False
+        elif len(observation.shape) == 2 and observation.shape[1] == len(observation_space.nvec):
+            return True
+        else:
+            raise ValueError(
+                f"Error: Unexpected observation shape {observation.shape} for MultiDiscrete "
+                + f"environment, please use ({len(observation_space.nvec)},) or "
+                + f"(n_env, {len(observation_space.nvec)}) for the observation shape."
+            )
+    elif isinstance(observation_space, gym.spaces.MultiBinary):
+        if observation.shape == (observation_space.n,):
+            return False
+        elif len(observation.shape) == 2 and observation.shape[1] == observation_space.n:
+            return True
+        else:
+            raise ValueError(
+                f"Error: Unexpected observation shape {observation.shape} for MultiBinary "
+                + f"environment, please use ({observation_space.n},) or "
+                + f"(n_env, {observation_space.n}) for the observation shape."
+            )
+    else:
         raise ValueError(
             "Error: Cannot determine if the observation is vectorized " + f" with the space type {observation_space}."
         )
@@ -390,11 +296,7 @@ def zip_strict(*iterables: Iterable) -> Iterable:
         yield combo
 
 
-def polyak_update(
-    params: Iterable[th.nn.Parameter],
-    target_params: Iterable[th.nn.Parameter],
-    tau: float,
-) -> None:
+def polyak_update(params: Iterable[th.nn.Parameter], target_params: Iterable[th.nn.Parameter], tau: float) -> None:
     """
     Perform a Polyak average update on ``target_params`` using ``params``:
     target parameters are slowly updated towards the main parameters.
@@ -415,49 +317,3 @@ def polyak_update(
         for param, target_param in zip_strict(params, target_params):
             target_param.data.mul_(1 - tau)
             th.add(target_param.data, param.data, alpha=tau, out=target_param.data)
-
-
-def obs_as_tensor(
-    obs: Union[np.ndarray, Dict[Union[str, int], np.ndarray]], device: th.device
-) -> Union[th.Tensor, TensorDict]:
-    """
-    Moves the observation to the given device.
-
-    :param obs:
-    :param device: PyTorch device
-    :return: PyTorch tensor of the observation on a desired device.
-    """
-    if isinstance(obs, np.ndarray):
-        return th.as_tensor(obs).to(device)
-    elif isinstance(obs, dict):
-        return {key: th.as_tensor(_obs).to(device) for (key, _obs) in obs.items()}
-    else:
-        raise Exception(f"Unrecognized type of observation {type(obs)}")
-
-
-def should_collect_more_steps(
-    train_freq: TrainFreq,
-    num_collected_steps: int,
-    num_collected_episodes: int,
-) -> bool:
-    """
-    Helper used in ``collect_rollouts()`` of off-policy algorithms
-    to determine the termination condition.
-
-    :param train_freq: How much experience should be collected before updating the policy.
-    :param num_collected_steps: The number of already collected steps.
-    :param num_collected_episodes: The number of already collected episodes.
-    :return: Whether to continue or not collecting experience
-        by doing rollouts of the current policy.
-    """
-    if train_freq.unit == TrainFrequencyUnit.STEP:
-        return num_collected_steps < train_freq.frequency
-
-    elif train_freq.unit == TrainFrequencyUnit.EPISODE:
-        return num_collected_episodes < train_freq.frequency
-
-    else:
-        raise ValueError(
-            "The unit of the `train_freq` must be either TrainFrequencyUnit.STEP "
-            f"or TrainFrequencyUnit.EPISODE not '{train_freq.unit}'!"
-        )

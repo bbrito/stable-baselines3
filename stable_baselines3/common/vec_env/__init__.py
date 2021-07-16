@@ -5,12 +5,9 @@ from typing import Optional, Type, Union
 
 from stable_baselines3.common.vec_env.base_vec_env import CloudpickleWrapper, VecEnv, VecEnvWrapper
 from stable_baselines3.common.vec_env.dummy_vec_env import DummyVecEnv
-from stable_baselines3.common.vec_env.stacked_observations import StackedDictObservations, StackedObservations
 from stable_baselines3.common.vec_env.subproc_vec_env import SubprocVecEnv
 from stable_baselines3.common.vec_env.vec_check_nan import VecCheckNan
-from stable_baselines3.common.vec_env.vec_extract_dict_obs import VecExtractDictObs
 from stable_baselines3.common.vec_env.vec_frame_stack import VecFrameStack
-from stable_baselines3.common.vec_env.vec_monitor import VecMonitor
 from stable_baselines3.common.vec_env.vec_normalize import VecNormalize
 from stable_baselines3.common.vec_env.vec_transpose import VecTransposeImage
 from stable_baselines3.common.vec_env.vec_video_recorder import VecVideoRecorder
@@ -44,7 +41,7 @@ def unwrap_vec_normalize(env: Union["GymEnv", VecEnv]) -> Optional[VecNormalize]
     return unwrap_vec_wrapper(env, VecNormalize)  # pytype:disable=bad-return-type
 
 
-def is_vecenv_wrapped(env: Union["GymEnv", VecEnv], vec_wrapper_class: Type[VecEnvWrapper]) -> bool:
+def is_wrapped(env: Union["GymEnv", VecEnv], vec_wrapper_class: Type[VecEnvWrapper]) -> bool:
     """
     Check if an environment is already wrapped by a given ``VecEnvWrapper``.
 

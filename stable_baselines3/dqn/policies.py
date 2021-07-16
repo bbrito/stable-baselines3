@@ -1,18 +1,11 @@
-from typing import Any, Dict, List, Optional, Type
+from typing import Any, Callable, Dict, List, Optional, Type
 
 import gym
 import torch as th
 from torch import nn
 
 from stable_baselines3.common.policies import BasePolicy, register_policy
-from stable_baselines3.common.torch_layers import (
-    BaseFeaturesExtractor,
-    CombinedExtractor,
-    FlattenExtractor,
-    NatureCNN,
-    create_mlp,
-)
-from stable_baselines3.common.type_aliases import Schedule
+from stable_baselines3.common.torch_layers import BaseFeaturesExtractor, FlattenExtractor, NatureCNN, create_mlp
 
 
 class QNetwork(BasePolicy):
@@ -71,8 +64,8 @@ class QNetwork(BasePolicy):
         action = q_values.argmax(dim=1).reshape(-1)
         return action
 
-    def _get_constructor_parameters(self) -> Dict[str, Any]:
-        data = super()._get_constructor_parameters()
+    def _get_data(self) -> Dict[str, Any]:
+        data = super()._get_data()
 
         data.update(
             dict(
@@ -80,6 +73,7 @@ class QNetwork(BasePolicy):
                 features_dim=self.features_dim,
                 activation_fn=self.activation_fn,
                 features_extractor=self.features_extractor,
+                epsilon=self.epsilon,
             )
         )
         return data
@@ -109,7 +103,7 @@ class DQNPolicy(BasePolicy):
         self,
         observation_space: gym.spaces.Space,
         action_space: gym.spaces.Space,
-        lr_schedule: Schedule,
+        lr_schedule: Callable,
         net_arch: Optional[List[int]] = None,
         activation_fn: Type[nn.Module] = nn.ReLU,
         features_extractor_class: Type[BaseFeaturesExtractor] = FlattenExtractor,
@@ -128,10 +122,10 @@ class DQNPolicy(BasePolicy):
         )
 
         if net_arch is None:
-            if features_extractor_class == NatureCNN:
-                net_arch = []
-            else:
+            if features_extractor_class == FlattenExtractor:
                 net_arch = [64, 64]
+            else:
+                net_arch = []
 
         self.net_arch = net_arch
         self.activation_fn = activation_fn
@@ -148,7 +142,7 @@ class DQNPolicy(BasePolicy):
         self.q_net, self.q_net_target = None, None
         self._build(lr_schedule)
 
-    def _build(self, lr_schedule: Schedule) -> None:
+    def _build(self, lr_schedule: Callable) -> None:
         """
         Create the network and the optimizer.
 
@@ -174,8 +168,8 @@ class DQNPolicy(BasePolicy):
     def _predict(self, obs: th.Tensor, deterministic: bool = True) -> th.Tensor:
         return self.q_net._predict(obs, deterministic=deterministic)
 
-    def _get_constructor_parameters(self) -> Dict[str, Any]:
-        data = super()._get_constructor_parameters()
+    def _get_data(self) -> Dict[str, Any]:
+        data = super()._get_data()
 
         data.update(
             dict(
@@ -216,7 +210,7 @@ class CnnPolicy(DQNPolicy):
         self,
         observation_space: gym.spaces.Space,
         action_space: gym.spaces.Space,
-        lr_schedule: Schedule,
+        lr_schedule: Callable,
         net_arch: Optional[List[int]] = None,
         activation_fn: Type[nn.Module] = nn.ReLU,
         features_extractor_class: Type[BaseFeaturesExtractor] = NatureCNN,
@@ -239,51 +233,5 @@ class CnnPolicy(DQNPolicy):
         )
 
 
-class MultiInputPolicy(DQNPolicy):
-    """
-    Policy class for DQN when using dict observations as input.
-
-    :param observation_space: Observation space
-    :param action_space: Action space
-    :param lr_schedule: Learning rate schedule (could be constant)
-    :param net_arch: The specification of the policy and value networks.
-    :param activation_fn: Activation function
-    :param features_extractor_class: Features extractor to use.
-    :param normalize_images: Whether to normalize images or not,
-         dividing by 255.0 (True by default)
-    :param optimizer_class: The optimizer to use,
-        ``th.optim.Adam`` by default
-    :param optimizer_kwargs: Additional keyword arguments,
-        excluding the learning rate, to pass to the optimizer
-    """
-
-    def __init__(
-        self,
-        observation_space: gym.spaces.Dict,
-        action_space: gym.spaces.Space,
-        lr_schedule: Schedule,
-        net_arch: Optional[List[int]] = None,
-        activation_fn: Type[nn.Module] = nn.ReLU,
-        features_extractor_class: Type[BaseFeaturesExtractor] = CombinedExtractor,
-        features_extractor_kwargs: Optional[Dict[str, Any]] = None,
-        normalize_images: bool = True,
-        optimizer_class: Type[th.optim.Optimizer] = th.optim.Adam,
-        optimizer_kwargs: Optional[Dict[str, Any]] = None,
-    ):
-        super(MultiInputPolicy, self).__init__(
-            observation_space,
-            action_space,
-            lr_schedule,
-            net_arch,
-            activation_fn,
-            features_extractor_class,
-            features_extractor_kwargs,
-            normalize_images,
-            optimizer_class,
-            optimizer_kwargs,
-        )
-
-
 register_policy("MlpPolicy", MlpPolicy)
 register_policy("CnnPolicy", CnnPolicy)
-register_policy("MultiInputPolicy", MultiInputPolicy)

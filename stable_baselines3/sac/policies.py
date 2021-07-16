@@ -1,4 +1,4 @@
-from typing import Any, Dict, List, Optional, Tuple, Type, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, Type, Union
 
 import gym
 import torch as th
@@ -9,13 +9,11 @@ from stable_baselines3.common.policies import BasePolicy, ContinuousCritic, crea
 from stable_baselines3.common.preprocessing import get_action_dim
 from stable_baselines3.common.torch_layers import (
     BaseFeaturesExtractor,
-    CombinedExtractor,
     FlattenExtractor,
     NatureCNN,
     create_mlp,
     get_actor_critic_arch,
 )
-from stable_baselines3.common.type_aliases import Schedule
 
 # CAP the standard deviation of the actor
 LOG_STD_MAX = 2
@@ -113,8 +111,8 @@ class Actor(BasePolicy):
             self.mu = nn.Linear(last_layer_dim, action_dim)
             self.log_std = nn.Linear(last_layer_dim, action_dim)
 
-    def _get_constructor_parameters(self) -> Dict[str, Any]:
-        data = super()._get_constructor_parameters()
+    def _get_data(self) -> Dict[str, Any]:
+        data = super()._get_data()
 
         data.update(
             dict(
@@ -229,7 +227,7 @@ class SACPolicy(BasePolicy):
         self,
         observation_space: gym.spaces.Space,
         action_space: gym.spaces.Space,
-        lr_schedule: Schedule,
+        lr_schedule: Callable,
         net_arch: Optional[Union[List[int], Dict[str, List[int]]]] = None,
         activation_fn: Type[nn.Module] = nn.ReLU,
         use_sde: bool = False,
@@ -256,10 +254,10 @@ class SACPolicy(BasePolicy):
         )
 
         if net_arch is None:
-            if features_extractor_class == NatureCNN:
-                net_arch = []
-            else:
+            if features_extractor_class == FlattenExtractor:
                 net_arch = [256, 256]
+            else:
+                net_arch = []
 
         actor_arch, critic_arch = get_actor_critic_arch(net_arch)
 
@@ -296,7 +294,7 @@ class SACPolicy(BasePolicy):
 
         self._build(lr_schedule)
 
-    def _build(self, lr_schedule: Schedule) -> None:
+    def _build(self, lr_schedule: Callable) -> None:
         self.actor = self.make_actor()
         self.actor.optimizer = self.optimizer_class(self.actor.parameters(), lr=lr_schedule(1), **self.optimizer_kwargs)
 
@@ -317,8 +315,8 @@ class SACPolicy(BasePolicy):
 
         self.critic.optimizer = self.optimizer_class(critic_parameters, lr=lr_schedule(1), **self.optimizer_kwargs)
 
-    def _get_constructor_parameters(self) -> Dict[str, Any]:
-        data = super()._get_constructor_parameters()
+    def _get_data(self) -> Dict[str, Any]:
+        data = super()._get_data()
 
         data.update(
             dict(
@@ -399,7 +397,7 @@ class CnnPolicy(SACPolicy):
         self,
         observation_space: gym.spaces.Space,
         action_space: gym.spaces.Space,
-        lr_schedule: Schedule,
+        lr_schedule: Callable,
         net_arch: Optional[Union[List[int], Dict[str, List[int]]]] = None,
         activation_fn: Type[nn.Module] = nn.ReLU,
         use_sde: bool = False,
@@ -436,77 +434,5 @@ class CnnPolicy(SACPolicy):
         )
 
 
-class MultiInputPolicy(SACPolicy):
-    """
-    Policy class (with both actor and critic) for SAC.
-
-    :param observation_space: Observation space
-    :param action_space: Action space
-    :param lr_schedule: Learning rate schedule (could be constant)
-    :param net_arch: The specification of the policy and value networks.
-    :param activation_fn: Activation function
-    :param use_sde: Whether to use State Dependent Exploration or not
-    :param log_std_init: Initial value for the log standard deviation
-    :param sde_net_arch: Network architecture for extracting features
-        when using gSDE. If None, the latent features from the policy will be used.
-        Pass an empty list to use the states as features.
-    :param use_expln: Use ``expln()`` function instead of ``exp()`` when using gSDE to ensure
-        a positive standard deviation (cf paper). It allows to keep variance
-        above zero and prevent it from growing too fast. In practice, ``exp()`` is usually enough.
-    :param clip_mean: Clip the mean output when using gSDE to avoid numerical instability.
-    :param features_extractor_class: Features extractor to use.
-    :param normalize_images: Whether to normalize images or not,
-         dividing by 255.0 (True by default)
-    :param optimizer_class: The optimizer to use,
-        ``th.optim.Adam`` by default
-    :param optimizer_kwargs: Additional keyword arguments,
-        excluding the learning rate, to pass to the optimizer
-    :param n_critics: Number of critic networks to create.
-    :param share_features_extractor: Whether to share or not the features extractor
-        between the actor and the critic (this saves computation time)
-    """
-
-    def __init__(
-        self,
-        observation_space: gym.spaces.Space,
-        action_space: gym.spaces.Space,
-        lr_schedule: Schedule,
-        net_arch: Optional[Union[List[int], Dict[str, List[int]]]] = None,
-        activation_fn: Type[nn.Module] = nn.ReLU,
-        use_sde: bool = False,
-        log_std_init: float = -3,
-        sde_net_arch: Optional[List[int]] = None,
-        use_expln: bool = False,
-        clip_mean: float = 2.0,
-        features_extractor_class: Type[BaseFeaturesExtractor] = CombinedExtractor,
-        features_extractor_kwargs: Optional[Dict[str, Any]] = None,
-        normalize_images: bool = True,
-        optimizer_class: Type[th.optim.Optimizer] = th.optim.Adam,
-        optimizer_kwargs: Optional[Dict[str, Any]] = None,
-        n_critics: int = 2,
-        share_features_extractor: bool = True,
-    ):
-        super(MultiInputPolicy, self).__init__(
-            observation_space,
-            action_space,
-            lr_schedule,
-            net_arch,
-            activation_fn,
-            use_sde,
-            log_std_init,
-            sde_net_arch,
-            use_expln,
-            clip_mean,
-            features_extractor_class,
-            features_extractor_kwargs,
-            normalize_images,
-            optimizer_class,
-            optimizer_kwargs,
-            n_critics,
-            share_features_extractor,
-        )
-
-
 register_policy("MlpPolicy", MlpPolicy)
 register_policy("CnnPolicy", CnnPolicy)
-register_policy("MultiInputPolicy", MultiInputPolicy)
