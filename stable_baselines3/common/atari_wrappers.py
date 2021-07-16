@@ -13,15 +13,14 @@ from stable_baselines3.common.type_aliases import GymObs, GymStepReturn
 
 
 class NoopResetEnv(gym.Wrapper):
-    """
-    Sample initial states by taking random number of no-ops on reset.
-    No-op is assumed to be action 0.
-
-    :param env: the environment to wrap
-    :param noop_max: the maximum value of no-ops to run
-    """
-
     def __init__(self, env: gym.Env, noop_max: int = 30):
+        """
+        Sample initial states by taking random number of no-ops on reset.
+        No-op is assumed to be action 0.
+
+        :param env: the environment to wrap
+        :param noop_max: the maximum value of no-ops to run
+        """
         gym.Wrapper.__init__(self, env)
         self.noop_max = noop_max
         self.override_num_noops = None
@@ -44,13 +43,12 @@ class NoopResetEnv(gym.Wrapper):
 
 
 class FireResetEnv(gym.Wrapper):
-    """
-    Take action on reset for environments that are fixed until firing.
-
-    :param env: the environment to wrap
-    """
-
     def __init__(self, env: gym.Env):
+        """
+        Take action on reset for environments that are fixed until firing.
+
+        :param env: the environment to wrap
+        """
         gym.Wrapper.__init__(self, env)
         assert env.unwrapped.get_action_meanings()[1] == "FIRE"
         assert len(env.unwrapped.get_action_meanings()) >= 3
@@ -67,14 +65,13 @@ class FireResetEnv(gym.Wrapper):
 
 
 class EpisodicLifeEnv(gym.Wrapper):
-    """
-    Make end-of-life == end-of-episode, but only reset on true game over.
-    Done by DeepMind for the DQN and co. since it helps value estimation.
-
-    :param env: the environment to wrap
-    """
-
     def __init__(self, env: gym.Env):
+        """
+        Make end-of-life == end-of-episode, but only reset on true game over.
+        Done by DeepMind for the DQN and co. since it helps value estimation.
+
+        :param env: the environment to wrap
+        """
         gym.Wrapper.__init__(self, env)
         self.lives = 0
         self.was_real_done = True
@@ -112,14 +109,13 @@ class EpisodicLifeEnv(gym.Wrapper):
 
 
 class MaxAndSkipEnv(gym.Wrapper):
-    """
-    Return only every ``skip``-th frame (frameskipping)
-
-    :param env: the environment
-    :param skip: number of ``skip``-th frame
-    """
-
     def __init__(self, env: gym.Env, skip: int = 4):
+        """
+        Return only every ``skip``-th frame (frameskipping)
+
+        :param env: the environment
+        :param skip: number of ``skip``-th frame
+        """
         gym.Wrapper.__init__(self, env)
         # most recent raw observations (for max pooling across time steps)
         self._obs_buffer = np.zeros((2,) + env.observation_space.shape, dtype=env.observation_space.dtype)
@@ -155,13 +151,12 @@ class MaxAndSkipEnv(gym.Wrapper):
 
 
 class ClipRewardEnv(gym.RewardWrapper):
-    """
-    Clips the reward to {+1, 0, -1} by its sign.
-
-    :param env: the environment
-    """
-
     def __init__(self, env: gym.Env):
+        """
+        Clips the reward to {+1, 0, -1} by its sign.
+
+        :param env: the environment
+        """
         gym.RewardWrapper.__init__(self, env)
 
     def reward(self, reward: float) -> float:
@@ -175,16 +170,15 @@ class ClipRewardEnv(gym.RewardWrapper):
 
 
 class WarpFrame(gym.ObservationWrapper):
-    """
-    Convert to grayscale and warp frames to 84x84 (default)
-    as done in the Nature paper and later work.
-
-    :param env: the environment
-    :param width:
-    :param height:
-    """
-
     def __init__(self, env: gym.Env, width: int = 84, height: int = 84):
+        """
+        Convert to grayscale and warp frames to 84x84 (default)
+        as done in the Nature paper and later work.
+
+        :param env: the environment
+        :param width:
+        :param height:
+        """
         gym.ObservationWrapper.__init__(self, env)
         self.width = width
         self.height = height
@@ -219,10 +213,11 @@ class AtariWrapper(gym.Wrapper):
     * Clip reward to {-1, 0, 1}
 
     :param env: gym environment
-    :param noop_max: max number of no-ops
-    :param frame_skip: the frequency at which the agent experiences the game.
-    :param screen_size: resize Atari frame
-    :param terminal_on_life_loss: if True, then step() returns done=True whenever a life is lost.
+    :param noop_max:: max number of no-ops
+    :param frame_skip:: the frequency at which the agent experiences the game.
+    :param screen_size:: resize Atari frame
+    :param terminal_on_life_loss:: if True, then step() returns done=True whenever a
+            life is lost.
     :param clip_reward: If True (default), the reward is clip to {-1, 0, 1} depending on its sign.
     """
 

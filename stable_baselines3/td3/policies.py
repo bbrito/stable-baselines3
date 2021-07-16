@@ -1,4 +1,4 @@
-from typing import Any, Dict, List, Optional, Type, Union
+from typing import Any, Callable, Dict, List, Optional, Type, Union
 
 import gym
 import torch as th
@@ -8,13 +8,11 @@ from stable_baselines3.common.policies import BasePolicy, ContinuousCritic, regi
 from stable_baselines3.common.preprocessing import get_action_dim
 from stable_baselines3.common.torch_layers import (
     BaseFeaturesExtractor,
-    CombinedExtractor,
     FlattenExtractor,
     NatureCNN,
     create_mlp,
     get_actor_critic_arch,
 )
-from stable_baselines3.common.type_aliases import Schedule
 
 
 class Actor(BasePolicy):
@@ -50,6 +48,8 @@ class Actor(BasePolicy):
             squash_output=True,
         )
 
+        self.features_extractor = features_extractor
+        self.normalize_images = normalize_images
         self.net_arch = net_arch
         self.features_dim = features_dim
         self.activation_fn = activation_fn
@@ -59,8 +59,8 @@ class Actor(BasePolicy):
         # Deterministic action
         self.mu = nn.Sequential(*actor_net)
 
-    def _get_constructor_parameters(self) -> Dict[str, Any]:
-        data = super()._get_constructor_parameters()
+    def _get_data(self) -> Dict[str, Any]:
+        data = super()._get_data()
 
         data.update(
             dict(
@@ -72,15 +72,13 @@ class Actor(BasePolicy):
         )
         return data
 
-    def forward(self, obs: th.Tensor) -> th.Tensor:
+    def forward(self, obs: th.Tensor, deterministic: bool = True) -> th.Tensor:
         # assert deterministic, 'The TD3 actor only outputs deterministic actions'
         features = self.extract_features(obs)
         return self.mu(features)
 
     def _predict(self, observation: th.Tensor, deterministic: bool = False) -> th.Tensor:
-        # Note: the deterministic deterministic parameter is ignored in the case of TD3.
-        #   Predictions are always deterministic.
-        return self.forward(observation)
+        return self.forward(observation, deterministic=deterministic)
 
 
 class TD3Policy(BasePolicy):
@@ -110,7 +108,7 @@ class TD3Policy(BasePolicy):
         self,
         observation_space: gym.spaces.Space,
         action_space: gym.spaces.Space,
-        lr_schedule: Schedule,
+        lr_schedule: Callable,
         net_arch: Optional[Union[List[int], Dict[str, List[int]]]] = None,
         activation_fn: Type[nn.Module] = nn.ReLU,
         features_extractor_class: Type[BaseFeaturesExtractor] = FlattenExtractor,
@@ -133,10 +131,10 @@ class TD3Policy(BasePolicy):
 
         # Default network architecture, from the original paper
         if net_arch is None:
-            if features_extractor_class == NatureCNN:
-                net_arch = []
-            else:
+            if features_extractor_class == FlattenExtractor:
                 net_arch = [400, 300]
+            else:
+                net_arch = []
 
         actor_arch, critic_arch = get_actor_critic_arch(net_arch)
 
@@ -165,7 +163,7 @@ class TD3Policy(BasePolicy):
 
         self._build(lr_schedule)
 
-    def _build(self, lr_schedule: Schedule) -> None:
+    def _build(self, lr_schedule: Callable) -> None:
         # Create actor and target
         # the features extractor should not be shared
         self.actor = self.make_actor(features_extractor=None)
@@ -191,8 +189,8 @@ class TD3Policy(BasePolicy):
         self.critic_target.load_state_dict(self.critic.state_dict())
         self.critic.optimizer = self.optimizer_class(self.critic.parameters(), lr=lr_schedule(1), **self.optimizer_kwargs)
 
-    def _get_constructor_parameters(self) -> Dict[str, Any]:
-        data = super()._get_constructor_parameters()
+    def _get_data(self) -> Dict[str, Any]:
+        data = super()._get_data()
 
         data.update(
             dict(
@@ -221,9 +219,7 @@ class TD3Policy(BasePolicy):
         return self._predict(observation, deterministic=deterministic)
 
     def _predict(self, observation: th.Tensor, deterministic: bool = False) -> th.Tensor:
-        # Note: the deterministic deterministic parameter is ignored in the case of TD3.
-        #   Predictions are always deterministic.
-        return self.actor(observation)
+        return self.actor(observation, deterministic=deterministic)
 
 
 MlpPolicy = TD3Policy
@@ -256,7 +252,7 @@ class CnnPolicy(TD3Policy):
         self,
         observation_space: gym.spaces.Space,
         action_space: gym.spaces.Space,
-        lr_schedule: Schedule,
+        lr_schedule: Callable,
         net_arch: Optional[Union[List[int], Dict[str, List[int]]]] = None,
         activation_fn: Type[nn.Module] = nn.ReLU,
         features_extractor_class: Type[BaseFeaturesExtractor] = NatureCNN,
@@ -283,60 +279,5 @@ class CnnPolicy(TD3Policy):
         )
 
 
-class MultiInputPolicy(TD3Policy):
-    """
-    Policy class (with both actor and critic) for TD3 to be used with Dict observation spaces.
-
-    :param observation_space: Observation space
-    :param action_space: Action space
-    :param lr_schedule: Learning rate schedule (could be constant)
-    :param net_arch: The specification of the policy and value networks.
-    :param activation_fn: Activation function
-    :param features_extractor_class: Features extractor to use.
-    :param features_extractor_kwargs: Keyword arguments
-        to pass to the features extractor.
-    :param normalize_images: Whether to normalize images or not,
-         dividing by 255.0 (True by default)
-    :param optimizer_class: The optimizer to use,
-        ``th.optim.Adam`` by default
-    :param optimizer_kwargs: Additional keyword arguments,
-        excluding the learning rate, to pass to the optimizer
-    :param n_critics: Number of critic networks to create.
-    :param share_features_extractor: Whether to share or not the features extractor
-        between the actor and the critic (this saves computation time)
-    """
-
-    def __init__(
-        self,
-        observation_space: gym.spaces.Dict,
-        action_space: gym.spaces.Space,
-        lr_schedule: Schedule,
-        net_arch: Optional[Union[List[int], Dict[str, List[int]]]] = None,
-        activation_fn: Type[nn.Module] = nn.ReLU,
-        features_extractor_class: Type[BaseFeaturesExtractor] = CombinedExtractor,
-        features_extractor_kwargs: Optional[Dict[str, Any]] = None,
-        normalize_images: bool = True,
-        optimizer_class: Type[th.optim.Optimizer] = th.optim.Adam,
-        optimizer_kwargs: Optional[Dict[str, Any]] = None,
-        n_critics: int = 2,
-        share_features_extractor: bool = True,
-    ):
-        super(MultiInputPolicy, self).__init__(
-            observation_space,
-            action_space,
-            lr_schedule,
-            net_arch,
-            activation_fn,
-            features_extractor_class,
-            features_extractor_kwargs,
-            normalize_images,
-            optimizer_class,
-            optimizer_kwargs,
-            n_critics,
-            share_features_extractor,
-        )
-
-
 register_policy("MlpPolicy", MlpPolicy)
 register_policy("CnnPolicy", CnnPolicy)
-register_policy("MultiInputPolicy", MultiInputPolicy)
