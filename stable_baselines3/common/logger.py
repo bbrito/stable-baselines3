@@ -397,7 +397,23 @@ def make_output_format(_format: str, log_dir: str, log_suffix: str = "") -> KVWr
     else:
         raise ValueError(f"Unknown format specified: {_format}")
 
+def record(key: str, value: Any, exclude: Optional[Union[str, Tuple[str, ...]]] = None) -> None:
+    """
+    Log a value of some diagnostic
+    Call this once for each diagnostic quantity, each iteration
+    If called many times, last value will be used.
 
+    :param key: save to log this key
+    :param value: save to log this value
+    :param exclude: outputs to be excluded
+    """
+    Logger.CURRENT.record(key, value, exclude)
+
+def dump(step: int = 0) -> None:
+    """
+    Write all of the diagnostics from the current iteration
+    """
+    Logger.CURRENT.dump(step)
 # ================================================================
 # Backend
 # ================================================================
@@ -410,6 +426,8 @@ class Logger(object):
     :param folder: the logging location
     :param output_formats: the list of output formats
     """
+    DEFAULT = None
+    CURRENT = None  # Current logger being used by the free functions above
 
     def __init__(self, folder: Optional[str], output_formats: List[KVWriter]):
         self.name_to_value = defaultdict(float)  # values this iteration
@@ -554,6 +572,8 @@ class Logger(object):
             if isinstance(_format, SeqWriter):
                 _format.write_sequence(map(str, args))
 
+# Initialize logger
+Logger.DEFAULT = Logger.CURRENT = Logger(folder=None, output_formats=[HumanOutputFormat(sys.stdout)])
 
 def configure(folder: Optional[str] = None, format_strings: Optional[List[str]] = None) -> Logger:
     """
@@ -576,14 +596,24 @@ def configure(folder: Optional[str] = None, format_strings: Optional[List[str]] 
     if format_strings is None:
         format_strings = os.getenv("SB3_LOG_FORMAT", "stdout,log,csv").split(",")
 
-    format_strings = list(filter(None, format_strings))
+    format_strings = list(filter(None, format_strings)) # changes
     output_formats = [make_output_format(f, folder, log_suffix) for f in format_strings]
 
     logger = Logger(folder=folder, output_formats=output_formats)
-    # Only print when some files will be saved
+    #Only print when some files will be saved
     if len(format_strings) > 0 and format_strings != ["stdout"]:
         logger.log(f"Logging to {folder}")
+    logger.log(f"Logging to {folder}")
     return logger
+
+def reset() -> None:
+    """
+    reset the current logger
+    """
+    if Logger.CURRENT is not Logger.DEFAULT:
+        Logger.CURRENT.close()
+        Logger.CURRENT = Logger.DEFAULT
+        log("Reset logger")
 
 
 # ================================================================
