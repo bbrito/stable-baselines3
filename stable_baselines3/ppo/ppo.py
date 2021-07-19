@@ -110,7 +110,7 @@ class PPO(OnPolicyAlgorithm):
         env: Union[GymEnv, str],
         learning_rate: Union[float, Callable] = 3e-4,
         n_steps: int = 2048,
-        batch_size: Optional[int] = 256,
+        batch_size: Optional[int] = 32,
         n_epochs: int = 10,
         gamma: float = 0.99,
         gae_lambda: float = 0.95,
@@ -274,7 +274,7 @@ class PPO(OnPolicyAlgorithm):
 
                 entropy_losses.append(entropy_loss.item())
 
-                loss = policy_loss + self.ent_coef * entropy_loss + self.vf_coef * value_loss
+                loss_GAIL = policy_loss + self.ent_coef * entropy_loss + self.vf_coef * value_loss
 
                 # Get expert batch
                 expert_samples = self._next_expert_batch()
@@ -287,8 +287,16 @@ class PPO(OnPolicyAlgorithm):
                 _, alogprobs, _ = self.policy.evaluate_actions(obs_tensor, actions_tensor)
                 bcloss = -alogprobs.mean()
                 # action loss is weighted sum
-                loss = self.alpha * bcloss + (1 - self.alpha) * loss
+                # option 2
+                #loss_BC_GAIL = self.alpha * bcloss + (1 - self.alpha) * policy_loss
+                #loss = loss_BC_GAIL + self.ent_coef * entropy_loss + self.vf_coef * value_loss
+                # end option 2
+                # option 1
+                loss = self.alpha * bcloss + (1 - self.alpha) * loss_GAIL
+                # end option 1
                 # Multiply this coeff with decay factor
+
+
 
                 # Optimization step
                 self.policy.optimizer.zero_grad()
