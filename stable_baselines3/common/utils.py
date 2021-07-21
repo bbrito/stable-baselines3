@@ -15,7 +15,7 @@ try:
 except ImportError:
     SummaryWriter = None
 
-from stable_baselines3.common import logger
+from stable_baselines3.common import logger, logger_old
 from stable_baselines3.common.type_aliases import GymEnv
 
 
@@ -188,6 +188,29 @@ def configure_logger(
             logger.configure(save_path, ["tensorboard"])
     elif verbose == 0:
         logger.configure(format_strings=[""])
+
+def configure_logger_old(
+    verbose: int = 0, tensorboard_log: Optional[str] = None, tb_log_name: str = "", reset_num_timesteps: bool = True
+) -> None:
+    """
+    Configure the logger's outputs.
+
+    :param verbose: the verbosity level: 0 no output, 1 info, 2 debug
+    :param tensorboard_log: the log location for tensorboard (if None, no logging)
+    :param tb_log_name: tensorboard log
+    """
+    if tensorboard_log is not None and SummaryWriter is not None:
+        latest_run_id = get_latest_run_id(tensorboard_log, tb_log_name)
+        if not reset_num_timesteps:
+            # Continue training in the same directory
+            latest_run_id -= 1
+        save_path = os.path.join(tensorboard_log, f"{tb_log_name}_{latest_run_id + 1}")
+        if verbose >= 1:
+            logger_old.configure(save_path, ["stdout", "tensorboard"])
+        else:
+            logger_old.configure(save_path, ["tensorboard"])
+    elif verbose == 0:
+        logger_old.configure(format_strings=[""])
 
 
 def check_for_correct_spaces(env: GymEnv, observation_space: gym.spaces.Space, action_space: gym.spaces.Space) -> None:

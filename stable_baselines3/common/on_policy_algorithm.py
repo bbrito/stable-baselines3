@@ -13,6 +13,7 @@ from stable_baselines3.common.policies import ActorCriticPolicy
 from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback
 from stable_baselines3.common.utils import safe_mean
 from stable_baselines3.common.vec_env import VecEnv
+from config import ImitationConfig
 
 
 class OnPolicyAlgorithm(BaseAlgorithm):
@@ -116,6 +117,7 @@ class OnPolicyAlgorithm(BaseAlgorithm):
             self.action_space,
             self.lr_schedule,
             use_sde=self.use_sde,
+            net_arch=ImitationConfig.net_arch,
             **self.policy_kwargs  # pytype:disable=not-instantiable
         )
         self.policy = self.policy.to(self.device)

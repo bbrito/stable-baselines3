@@ -10,6 +10,9 @@ from stable_baselines3.common.on_policy_algorithm import OnPolicyAlgorithm
 from stable_baselines3.common.policies import ActorCriticPolicy
 from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback
 from stable_baselines3.common.utils import explained_variance, get_schedule_fn
+#from imitation.algorithms.bc_old import EpochOrBatchIteratorWithProgress
+#from imitation.policies import base
+#from imitation.data import types
 
 import itertools
 import torch.utils.data as th_data
@@ -286,6 +289,8 @@ class PPO(OnPolicyAlgorithm):
                 # BC-GAIL
                 _, alogprobs, _ = self.policy.evaluate_actions(obs_tensor, actions_tensor)
                 bcloss = -alogprobs.mean()
+
+
                 # action loss is weighted sum
                 # option 2
                 #loss_BC_GAIL = self.alpha * bcloss + (1 - self.alpha) * policy_loss
@@ -295,7 +300,6 @@ class PPO(OnPolicyAlgorithm):
                 loss = self.alpha * bcloss + (1 - self.alpha) * loss_GAIL
                 # end option 1
                 # Multiply this coeff with decay factor
-
 
 
                 # Optimization step
