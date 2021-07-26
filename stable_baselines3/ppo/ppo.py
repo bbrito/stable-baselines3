@@ -24,6 +24,7 @@ from typing import (
     Mapping,
     Optional,
     Sequence,
+    Tuple,
     Type,
     TypeVar,
     Union,
@@ -55,6 +56,101 @@ def endless_iter(iterable: Iterable[T]) -> Iterator[T]:
         raise err
 
     return itertools.chain.from_iterable(itertools.repeat(iterable))
+
+class EpochOrBatchIteratorWithProgress:
+    def __init__(
+        self,
+        data_loader: Iterable[dict],
+        n_epochs: Optional[int] = None,
+        n_batches: Optional[int] = None,
+        on_epoch_end: Optional[Callable[[], None]] = None,
+        on_batch_end: Optional[Callable[[], None]] = None,
+    ):
+        """Wraps DataLoader so that all BC batches can be processed in a one for-loop.
+        Also uses `tqdm` to show progress in stdout.
+        Args:
+            data_loader: An iterable over data dicts, as used in `BC`.
+            n_epochs: The number of epochs to iterate through in one call to
+                __iter__. Exactly one of `n_epochs` and `n_batches` should be provided.
+            n_batches: The number of batches to iterate through in one call to
+                __iter__. Exactly one of `n_epochs` and `n_batches` should be provided.
+            on_epoch_end: A callback function without parameters to be called at the
+                end of every epoch.
+            on_batch_end: A callback function without parameters to be called at the
+                end of every batch.
+        """
+        if n_epochs is not None and n_batches is None:
+            self.use_epochs = True
+        elif n_epochs is None and n_batches is not None:
+            self.use_epochs = False
+        else:
+            raise ValueError(
+                "Must provide exactly one of `n_epochs` and `n_batches` arguments."
+            )
+
+        self.data_loader = data_loader
+        self.n_epochs = n_epochs
+        self.n_batches = n_batches
+        self.on_epoch_end = on_epoch_end
+        self.on_batch_end = on_batch_end
+
+    def __iter__(self) -> Iterable[Tuple[dict, dict]]:
+        """Yields batches while updating tqdm display to display progress."""
+
+        samples_so_far = 0
+        epoch_num = 0
+        batch_num = 0
+        batch_suffix = epoch_suffix = ""
+        if self.use_epochs:
+            display = tqdm.tqdm(total=self.n_epochs)
+            epoch_suffix = f"/{self.n_epochs}"
+        else:  # Use batches.
+            display = tqdm.tqdm(total=self.n_batches)
+            batch_suffix = f"/{self.n_batches}"
+
+        def update_desc():
+            display.set_description(
+                f"batch: {batch_num}{batch_suffix}  epoch: {epoch_num}{epoch_suffix}"
+            )
+
+        with contextlib.closing(display):
+            while True:
+                update_desc()
+                got_data_on_epoch = False
+                for batch in self.data_loader:
+                    got_data_on_epoch = True
+                    batch_num += 1
+                    batch_size = len(batch["obs"])
+                    assert batch_size > 0
+                    samples_so_far += batch_size
+                    stats = dict(
+                        epoch_num=epoch_num,
+                        batch_num=batch_num,
+                        samples_so_far=samples_so_far,
+                    )
+                    yield batch, stats
+                    if self.on_batch_end is not None:
+                        self.on_batch_end()
+                    if not self.use_epochs:
+                        update_desc()
+                        display.update(1)
+                        if batch_num >= self.n_batches:
+                            return
+                if not got_data_on_epoch:
+                    raise AssertionError(
+                        f"Data loader returned no data after "
+                        f"{batch_num} batches, during epoch "
+                        f"{epoch_num} -- did it reset correctly?"
+                    )
+                epoch_num += 1
+                if self.on_epoch_end is not None:
+                    self.on_epoch_end()
+
+                if self.use_epochs:
+                    update_desc()
+                    display.update(1)
+                    if epoch_num >= self.n_epochs:
+                        return
 
 class PPO(OnPolicyAlgorithm):
     """
@@ -114,7 +210,7 @@ class PPO(OnPolicyAlgorithm):
         learning_rate: Union[float, Callable] = 3e-4,
         n_steps: int = 2048,
         batch_size: Optional[int] = 32,
-        n_epochs: int = 10,
+        n_epochs: int = 1,
         gamma: float = 0.99,
         gae_lambda: float = 0.95,
         clip_range: float = 0.05,
@@ -164,6 +260,9 @@ class PPO(OnPolicyAlgorithm):
         self.target_kl = target_kl
         self.alpha = alpha
         self.decay = decay
+        self.dagger = True
+        self.bc = False
+        self.ppo = False
 
         if expert_data is not None:
             if isinstance(expert_data, types.Transitions):
@@ -219,102 +318,145 @@ class PPO(OnPolicyAlgorithm):
         pg_losses, value_losses = [], []
         mse = []
         clip_fractions = []
-
+        batch_num = 0
         # train for gradient_steps epochs
         for epoch in range(self.n_epochs):
             approx_kl_divs = []
             # Do a complete pass on the rollout buffer
             for rollout_data in self.rollout_buffer.get(self.batch_size):
+                loss = 0
                 actions = rollout_data.actions
-                if isinstance(self.action_space, spaces.Discrete):
-                    # Convert discrete action from float to long
-                    actions = rollout_data.actions.long().flatten()
+                if self.ppo:
+                    if isinstance(self.action_space, spaces.Discrete):
+                        # Convert discrete action from float to long
+                        actions = rollout_data.actions.long().flatten()
 
-                # Re-sample the noise matrix because the log_std has changed
-                # TODO: investigate why there is no issue with the gradient
-                # if that line is commented (as in SAC)
-                if self.use_sde:
-                    self.policy.reset_noise(self.batch_size)
+                    # Re-sample the noise matrix because the log_std has changed
+                    # TODO: investigate why there is no issue with the gradient
+                    # if that line is commented (as in SAC)
+                    if self.use_sde:
+                        self.policy.reset_noise(self.batch_size)
 
-                values, log_prob, entropy = self.policy.evaluate_actions(rollout_data.observations, actions)
-                values = values.flatten()
-                # Normalize advantage
-                advantages = rollout_data.advantages
-                advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+                    values, log_prob, entropy = self.policy.evaluate_actions(rollout_data.observations, actions)
+                    values = values.flatten()
+                    # Normalize advantage
+                    advantages = rollout_data.advantages
+                    advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
-                # ratio between old and new policy, should be one at the first iteration
-                ratio = th.exp(log_prob - rollout_data.old_log_prob)
+                    # ratio between old and new policy, should be one at the first iteration
+                    ratio = th.exp(log_prob - rollout_data.old_log_prob)
 
-                # clipped surrogate loss
-                policy_loss_1 = advantages * ratio
-                policy_loss_2 = advantages * th.clamp(ratio, 1 - clip_range, 1 + clip_range)
-                policy_loss = -th.min(policy_loss_1, policy_loss_2).mean()
+                    # clipped surrogate loss
+                    policy_loss_1 = advantages * ratio
+                    policy_loss_2 = advantages * th.clamp(ratio, 1 - clip_range, 1 + clip_range)
+                    policy_loss = -th.min(policy_loss_1, policy_loss_2).mean()
 
-                # Logging
-                pg_losses.append(policy_loss.item())
-                clip_fraction = th.mean((th.abs(ratio - 1) > clip_range).float()).item()
-                clip_fractions.append(clip_fraction)
+                    # Logging
+                    pg_losses.append(policy_loss.item())
+                    clip_fraction = th.mean((th.abs(ratio - 1) > clip_range).float()).item()
+                    clip_fractions.append(clip_fraction)
 
-                if self.clip_range_vf is None:
-                    # No clipping
-                    values_pred = values
-                else:
-                    # Clip the different between old and new value
-                    # NOTE: this depends on the reward scaling
-                    values_pred = rollout_data.old_values + th.clamp(
-                        values - rollout_data.old_values, -clip_range_vf, clip_range_vf
+                    if self.clip_range_vf is None:
+                        # No clipping
+                        values_pred = values
+                    else:
+                        # Clip the different between old and new value
+                        # NOTE: this depends on the reward scaling
+                        values_pred = rollout_data.old_values + th.clamp(
+                            values - rollout_data.old_values, -clip_range_vf, clip_range_vf
+                        )
+                    # Value loss using the TD(gae_lambda) target
+                    value_loss = F.mse_loss(rollout_data.returns, values_pred)
+                    value_losses.append(value_loss.item())
+
+                    # Entropy loss favor exploration
+                    if entropy is None:
+                        # Approximate entropy when no analytical form
+                        entropy_loss = -th.mean(-log_prob)
+                    else:
+                        entropy_loss = -th.mean(entropy)
+
+                    entropy_losses.append(entropy_loss.item())
+
+                    loss_ppo = policy_loss + self.ent_coef * entropy_loss + self.vf_coef * value_loss
+                    loss += loss_ppo
+
+                if self.bc:
+                    # Get expert batch
+                    expert_samples = self._next_expert_batch()
+                    with th.no_grad():
+                        # Compute value for the last timestep
+                        obs_tensor = th.as_tensor(expert_samples['obs']).to(self.device)
+                        actions_tensor = th.as_tensor(expert_samples['acts']).to(self.device)
+
+                    # BC-GAIL
+                    _, alogprobs, _ = self.policy.evaluate_actions(obs_tensor, actions_tensor)
+                    bcloss = -alogprobs.mean()
+                    loss = self.alpha * bcloss + (1 - self.alpha) * loss
+
+                if self.ppo or self.bc:
+                    # Optimization step
+                    self.policy.optimizer.zero_grad()
+                    loss.backward()
+                    # Clip grad norm
+                    th.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
+                    self.policy.optimizer.step()
+                    approx_kl_divs.append(th.mean(rollout_data.old_log_prob - log_prob).detach().cpu().numpy())
+
+                if self.dagger:
+                    batch_size = 32
+                    transitions = {}
+                    transitions['acts'] = actions.detach().cpu().numpy()
+                    transitions['obs'] = rollout_data.observations.detach().cpu().numpy()
+
+                    values, log_prob, entropy = self.policy.evaluate_actions(rollout_data.observations, actions)
+
+                    prob_true_act = th.exp(log_prob).mean()
+                    log_prob = log_prob.mean()
+                    entropy = entropy.mean()
+
+                    l2_norms = [th.sum(th.square(w)) for w in self.policy.parameters()]
+                    l2_norm = sum(l2_norms) / 2  # divide by 2 to cancel with gradient of square
+
+                    #TODO: MOVE THIS
+                    self.ent_weight = 1e-3
+                    self.l2_weight = 0
+
+                    ent_loss = -self.ent_weight * entropy
+                    neglogp = -log_prob
+                    l2_loss = self.l2_weight * l2_norm
+                    loss = neglogp + ent_loss + l2_loss
+
+                    self.policy.optimizer.zero_grad()
+                    loss.backward()
+                    self.policy.optimizer.step()
+
+                    stats_dict = dict(
+                        neglogp=neglogp.item(),
+                        loss=loss.item(),
+                        entropy=entropy.item(),
+                        ent_loss=ent_loss.item(),
+                        prob_true_act=prob_true_act.item(),
+                        l2_norm=l2_norm.item(),
+                        l2_loss=l2_loss.item(),
                     )
-                # Value loss using the TD(gae_lambda) target
-                value_loss = F.mse_loss(rollout_data.returns, values_pred)
-                value_losses.append(value_loss.item())
 
-                # Entropy loss favor exploration
-                if entropy is None:
-                    # Approximate entropy when no analytical form
-                    entropy_loss = -th.mean(-log_prob)
-                else:
-                    entropy_loss = -th.mean(entropy)
+                    """
+                    if batch_num % 1 == 0:
+                        for stats in [stats_dict_it, stats_dict_loss]:
+                            for k, v in stats.items():
+                                logger.record(k, v)
+                        logger.dump(batch_num)
+                    batch_num += 1
+                    """
+                    batch_num += 1
+                    print(batch_num)
+            if self.ppo:
+                all_kl_divs.append(np.mean(approx_kl_divs))
 
-                entropy_losses.append(entropy_loss.item())
-
-                loss_GAIL = policy_loss + self.ent_coef * entropy_loss + self.vf_coef * value_loss
-
-                # Get expert batch
-                expert_samples = self._next_expert_batch()
-                with th.no_grad():
-                    # Compute value for the last timestep
-                    obs_tensor = th.as_tensor(expert_samples['obs']).to(self.device)
-                    actions_tensor = th.as_tensor(expert_samples['acts']).to(self.device)
-
-                # BC-GAIL
-                _, alogprobs, _ = self.policy.evaluate_actions(obs_tensor, actions_tensor)
-                bcloss = -alogprobs.mean()
-
-
-                # action loss is weighted sum
-                # option 2
-                #loss_BC_GAIL = self.alpha * bcloss + (1 - self.alpha) * policy_loss
-                #loss = loss_BC_GAIL + self.ent_coef * entropy_loss + self.vf_coef * value_loss
-                # end option 2
-                # option 1
-                loss = self.alpha * bcloss + (1 - self.alpha) * loss_GAIL
-                # end option 1
-                # Multiply this coeff with decay factor
-
-
-                # Optimization step
-                self.policy.optimizer.zero_grad()
-                loss.backward()
-                # Clip grad norm
-                th.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
-                self.policy.optimizer.step()
-                approx_kl_divs.append(th.mean(rollout_data.old_log_prob - log_prob).detach().cpu().numpy())
-
-            all_kl_divs.append(np.mean(approx_kl_divs))
-
-            if self.target_kl is not None and np.mean(approx_kl_divs) > 1.5 * self.target_kl:
-                print(f"Early stopping at step {epoch} due to reaching max kl: {np.mean(approx_kl_divs):.2f}")
-                break
+                if self.target_kl is not None and np.mean(approx_kl_divs) > 1.5 * self.target_kl:
+                    print(f"Early stopping at step {epoch} due to reaching max kl: {np.mean(approx_kl_divs):.2f}")
+                    break
 
         self._n_updates += self.n_epochs
         self.alpha *= self.decay

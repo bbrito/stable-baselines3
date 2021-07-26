@@ -95,6 +95,8 @@ class OnPolicyAlgorithm(BaseAlgorithm):
         self.vf_coef = vf_coef
         self.max_grad_norm = max_grad_norm
         self.rollout_buffer = None
+        self.rampdown_rounds = 15
+
 
         if _init_setup_model:
             self._setup_model()
@@ -112,6 +114,7 @@ class OnPolicyAlgorithm(BaseAlgorithm):
             gae_lambda=self.gae_lambda,
             n_envs=self.n_envs,
         )
+
         self.policy = self.policy_class(
             self.observation_space,
             self.action_space,
@@ -138,6 +141,7 @@ class OnPolicyAlgorithm(BaseAlgorithm):
         """
         assert self._last_obs is not None, "No previous observation was provided"
         n_steps = 0
+        #if not self.dagger:
         rollout_buffer.reset()
         # Sample new weights for the state dependent exploration
         if self.use_sde:
@@ -150,11 +154,24 @@ class OnPolicyAlgorithm(BaseAlgorithm):
                 # Sample a new noise matrix
                 self.policy.reset_noise(env.num_envs)
 
+            (expert_action,), _ = env.expert_policy.predict(
+                self._last_obs,
+                deterministic=True,
+            )
+
             with th.no_grad():
                 # Convert to pytorch tensor
                 obs_tensor = th.as_tensor(self._last_obs).to(self.device)
-                actions, values, log_probs = self.policy.forward(obs_tensor)
-            actions = actions.cpu().numpy()
+                policy_action_th, values, log_probs = self.policy.forward(obs_tensor)
+
+            policy_action = policy_action_th.cpu().numpy()
+
+            # Replace the given action with a robot action 100*(1-beta)% of the time.
+            self.beta = min(1, max(0, (self.rampdown_rounds - env.unwrapped.envs[0].env.episode_num) / self.rampdown_rounds))
+            if np.random.uniform(0, 1) > self.beta:
+                actions = policy_action
+            else:
+                actions = np.expand_dims(expert_action,axis=0)
 
             # Rescale and perform action
             clipped_actions = actions
