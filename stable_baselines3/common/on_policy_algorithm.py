@@ -4,6 +4,11 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, Type, Union
 import gym
 import numpy as np
 import torch as th
+import datetime
+import uuid
+import os
+import logging
+import dataclasses
 
 from stable_baselines3.common import logger
 from stable_baselines3.common.base_class import BaseAlgorithm
@@ -13,7 +18,30 @@ from stable_baselines3.common.policies import ActorCriticPolicy
 from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback
 from stable_baselines3.common.utils import safe_mean
 from stable_baselines3.common.vec_env import VecEnv
+from imitation.data import rollout,  types
+from stable_baselines3.common import utils
 from config import ImitationConfig
+
+
+def make_unique_timestamp() -> str:
+    """Timestamp, with random uuid added to avoid collisions."""
+    ISO_TIMESTAMP = "%Y%m%d_%H%M%S"
+    timestamp = datetime.datetime.now().strftime(ISO_TIMESTAMP)
+    random_uuid = uuid.uuid4().hex[:6]
+    return f"{timestamp}_{random_uuid}"
+
+def _save_trajectory(
+    npz_path: str,
+    trajectory: types.Trajectory,
+) -> None:
+    """Save a trajectory as a compressed Numpy file."""
+    save_dir = os.path.dirname(npz_path)
+    if save_dir:
+        os.makedirs(save_dir, exist_ok=True)
+    assert isinstance(trajectory, types.Trajectory)
+    np.savez_compressed(npz_path, **dataclasses.asdict(trajectory))
+
+
 
 
 class OnPolicyAlgorithm(BaseAlgorithm):
@@ -70,6 +98,7 @@ class OnPolicyAlgorithm(BaseAlgorithm):
         seed: Optional[int] = None,
         device: Union[th.device, str] = "auto",
         _init_setup_model: bool = True,
+        save_path: str = None,
     ):
 
         super(OnPolicyAlgorithm, self).__init__(
@@ -96,6 +125,8 @@ class OnPolicyAlgorithm(BaseAlgorithm):
         self.max_grad_norm = max_grad_norm
         self.rollout_buffer = None
         self.rampdown_rounds = 15
+        self.traj_accum = None
+        self.save_path = save_path
 
 
         if _init_setup_model:
@@ -125,6 +156,26 @@ class OnPolicyAlgorithm(BaseAlgorithm):
         )
         self.policy = self.policy.to(self.device)
 
+        self.traj_accum = rollout.TrajectoryAccumulator()
+        obs = self.env.reset()
+        self._last_obs = obs
+        self.traj_accum.add_step({"obs": np.squeeze(obs)})
+        self._done_before = False
+        self._is_reset = True
+
+    def reset(self) -> np.ndarray:
+        # reset the environment
+        self.traj_accum = rollout.TrajectoryAccumulator()
+        obs = self.env.reset()
+        self._last_obs = obs
+        self.traj_accum.add_step({"obs": np.squeeze(obs)})
+        self._done_before = False
+        self._is_reset = True
+        return obs
+
+
+
+
     def collect_rollouts(
         self, env: VecEnv, callback: BaseCallback, rollout_buffer: RolloutBuffer, n_rollout_steps: int
     ) -> bool:
@@ -148,13 +199,22 @@ class OnPolicyAlgorithm(BaseAlgorithm):
             self.policy.reset_noise(env.num_envs)
 
         callback.on_rollout_start()
+        expert_pol = env.expert_policy
+
+        round_num = None
+        self.round_num = 0
+        if round_num is None:
+            round_num = self.round_num
+        self.save_path_round = os.path.join(self.save_path , "demos", f"round-{round_num:03d}")
 
         while n_steps < n_rollout_steps:
+
+
             if self.use_sde and self.sde_sample_freq > 0 and n_steps % self.sde_sample_freq == 0:
                 # Sample a new noise matrix
                 self.policy.reset_noise(env.num_envs)
 
-            (expert_action,), _ = env.expert_policy.predict(
+            (expert_action,), _ = expert_pol.predict(
                 self._last_obs,
                 deterministic=True,
             )
@@ -166,6 +226,7 @@ class OnPolicyAlgorithm(BaseAlgorithm):
 
             policy_action = policy_action_th.cpu().numpy()
 
+            # dagger
             # Replace the given action with a robot action 100*(1-beta)% of the time.
             self.beta = min(1, max(0, (self.rampdown_rounds - env.unwrapped.envs[0].env.episode_num) / self.rampdown_rounds))
             if np.random.uniform(0, 1) > self.beta:
@@ -178,8 +239,33 @@ class OnPolicyAlgorithm(BaseAlgorithm):
             # Clip the actions to avoid out of bound error
             if isinstance(self.action_space, gym.spaces.Box):
                 clipped_actions = np.clip(actions, self.action_space.low, self.action_space.high)
+                clipped_expert_actions = np.clip(np.expand_dims(expert_action,axis=0), self.action_space.low, self.action_space.high)
 
-            new_obs, rewards, dones, infos = env.step(clipped_actions)
+            # actually step the env & record data as appropriate
+            next_obs, reward, done, info = env.step(clipped_actions)
+            self._last_obs = next_obs
+            self.traj_accum.add_step(
+                {"acts": np.squeeze(clipped_expert_actions), "obs": np.squeeze(next_obs), "rews": np.squeeze(reward), "infos": info}
+            )
+
+            # if we're finished, then save the trajectory & print a message
+            if done and not self._done_before:
+                trajectory = self.traj_accum.finish_trajectory()
+                timestamp = make_unique_timestamp()
+                trajectory_path = os.path.join(
+                    self.save_path_round, "dagger-gail-demo-" + timestamp + ".npz"
+                )
+                logging.info(f"Saving demo at '{trajectory_path}'")
+                _save_trajectory(trajectory_path, trajectory)
+
+
+
+
+
+
+
+
+            #new_obs, rewards, dones, infos = env.step(clipped_actions)
 
             self.num_timesteps += env.num_envs
 
@@ -188,22 +274,34 @@ class OnPolicyAlgorithm(BaseAlgorithm):
             if callback.on_step() is False:
                 return False
 
-            self._update_info_buffer(infos)
+            self._update_info_buffer(info)
             n_steps += 1
 
             if isinstance(self.action_space, gym.spaces.Discrete):
                 # Reshape in case of discrete action
                 actions = actions.reshape(-1, 1)
-            rollout_buffer.add(self._last_obs, actions, rewards, self._last_dones, values, log_probs)
-            self._last_obs = new_obs
-            self._last_dones = dones
+            rollout_buffer.add(self._last_obs, actions, reward, self._last_dones, values, log_probs)
+            self._last_obs = next_obs
+            self._last_dones = done
+
+            if done:
+                # record the fact that we're already done to avoid saving demo over and
+                # over until the user resets
+                self._done_before = True
+                # reset the environment
+                self.traj_accum = rollout.TrajectoryAccumulator()
+                obs = env.venv.envs[0].env.reset()
+                self._last_obs = np.expand_dims(obs,axis=0)
+                self.traj_accum.add_step({"obs": np.squeeze(obs)})
+                self._done_before = False
+                self._is_reset = True
 
         with th.no_grad():
             # Compute value for the last timestep
-            obs_tensor = th.as_tensor(new_obs).to(self.device)
+            obs_tensor = th.as_tensor(next_obs).to(self.device)
             _, values, _ = self.policy.forward(obs_tensor)
 
-        rollout_buffer.compute_returns_and_advantage(last_values=values, dones=dones)
+        rollout_buffer.compute_returns_and_advantage(last_values=values, dones=done)
 
         callback.on_rollout_end()
 
@@ -227,6 +325,7 @@ class OnPolicyAlgorithm(BaseAlgorithm):
         tb_log_name: str = "OnPolicyAlgorithm",
         eval_log_path: Optional[str] = None,
         reset_num_timesteps: bool = True,
+        save_path: str = None,
     ) -> "OnPolicyAlgorithm":
         iteration = 0
 
@@ -238,6 +337,7 @@ class OnPolicyAlgorithm(BaseAlgorithm):
 
         while self.num_timesteps < total_timesteps:
 
+            #self.reset()
             continue_training = self.collect_rollouts(self.env, callback, self.rollout_buffer, n_rollout_steps=self.n_steps)
 
             if continue_training is False:
@@ -257,6 +357,13 @@ class OnPolicyAlgorithm(BaseAlgorithm):
                 logger.record("time/time_elapsed", int(time.time() - self.start_time), exclude="tensorboard")
                 logger.record("time/total_timesteps", self.num_timesteps, exclude="tensorboard")
                 logger.dump(step=self.num_timesteps)
+
+            # load expert data
+            self._last_loaded_round = -1
+            self.DEMO_SUFFIX = ".npz"
+            self._all_demos = []
+            self.expert_data_loader: Optional[Iterable[Mapping]] = None
+            self._try_load_demos()
 
             self.train()
 

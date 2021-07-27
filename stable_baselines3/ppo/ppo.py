@@ -1,10 +1,15 @@
 from typing import Any, Callable, Dict, Optional, Type, Union
 
+import contextlib
 import numpy as np
 import torch as th
+import os
+import logging
 from gym import spaces
 from torch.nn import functional as F
+import tqdm.autonotebook as tqdm
 
+from imitation.data import rollout, types
 from stable_baselines3.common import logger
 from stable_baselines3.common.on_policy_algorithm import OnPolicyAlgorithm
 from stable_baselines3.common.policies import ActorCriticPolicy
@@ -152,6 +157,16 @@ class EpochOrBatchIteratorWithProgress:
                     if epoch_num >= self.n_epochs:
                         return
 
+
+def _load_trajectory(npz_path: str) -> types.Trajectory:
+    """Load a single trajectory from a compressed Numpy file."""
+    np_data = np.load(npz_path, allow_pickle=True)
+    has_rew = "rews" in np_data
+    cls = types.TrajectoryWithRew if has_rew else types.Trajectory
+    return cls(**dict(np_data.items()))
+
+
+
 class PPO(OnPolicyAlgorithm):
     """
     Proximal Policy Optimization algorithm (PPO) (clip version)
@@ -230,6 +245,7 @@ class PPO(OnPolicyAlgorithm):
         _init_setup_model: bool = True,
         alpha: int = 1.0,
         decay: int = 0.99,
+        save_path: str = None,
     ):
 
         super(PPO, self).__init__(
@@ -263,6 +279,7 @@ class PPO(OnPolicyAlgorithm):
         self.dagger = True
         self.bc = False
         self.ppo = False
+        self.save_path = save_path
 
         if expert_data is not None:
             if isinstance(expert_data, types.Transitions):
@@ -301,7 +318,91 @@ class PPO(OnPolicyAlgorithm):
 
             self.clip_range_vf = get_schedule_fn(self.clip_range_vf)
 
-    def train(self) -> None:
+    def set_expert_data_loader(
+            self,
+            expert_data: Union[Iterable[Mapping], types.TransitionsMinimal],
+    ) -> None:
+        """Set the expert data loader, which yields batches of obs-act pairs.
+        Changing the expert data loader on-demand is useful for DAgger and other
+        interactive algorithms.
+        Args:
+            expert_data: Either a Torch `DataLoader`, any other iterator that
+                yields dictionaries containing "obs" and "acts" Tensors or Numpy arrays,
+                or a `TransitionsMinimal` instance.
+                If this is a `TransitionsMinimal` instance, then it is automatically
+                converted into a shuffled `DataLoader` with batch size
+                `BC.DEFAULT_BATCH_SIZE`.
+        """
+        if isinstance(expert_data, types.TransitionsMinimal):
+            self.expert_data_loader = th_data.DataLoader(
+                expert_data,
+                shuffle=True,
+                batch_size=BC.DEFAULT_BATCH_SIZE,
+                collate_fn=types.transitions_collate_fn,
+            )
+        else:
+            self.expert_data_loader = expert_data
+
+    def _load_all_demos(self):
+        num_demos_by_round = []
+        for round_num in range(self._last_loaded_round + 1, self.round_num + 1):
+            round_dir = self._demo_dir_path_for_round(round_num)
+            demo_paths = self._get_demo_paths(round_dir)
+            self._all_demos.extend(_load_trajectory(p) for p in demo_paths)
+            num_demos_by_round.append(len(demo_paths))
+        logging.info(f"Loaded {len(self._all_demos)} total")
+        demo_transitions = rollout.flatten_trajectories(self._all_demos)
+        return demo_transitions, num_demos_by_round
+
+
+
+    def _get_demo_paths(self, round_dir):
+        return [
+            os.path.join(round_dir, p)
+            for p in os.listdir(round_dir)
+            if p.endswith(self.DEMO_SUFFIX)
+        ]
+
+    def _demo_dir_path_for_round(self, round_num=None):
+        if round_num is None:
+            round_num = self.round_num
+        return os.path.join(self.save_path, "demos", f"round-{round_num:03d}")
+
+    def _check_has_latest_demos(self):
+        demo_dir = self._demo_dir_path_for_round()
+        demo_paths = self._get_demo_paths(demo_dir) if os.path.isdir(demo_dir) else []
+        if len(demo_paths) == 0:
+            raise NeedsDemosException(
+                f"No demos found for round {self.round_num} in dir '{demo_dir}'. "
+                f"Maybe you need to collect some demos? See "
+                f".get_trajectory_collector()"
+            )
+
+    def _try_load_demos(self):
+        self._check_has_latest_demos()
+        if self._last_loaded_round < self.round_num:
+            transitions, num_demos = self._load_all_demos()
+            logging.info(
+                f"Loaded {sum(num_demos)} new demos from {len(num_demos)} rounds"
+            )
+            data_loader = th_data.DataLoader(
+                transitions,
+                self.batch_size,
+                drop_last=True,
+                shuffle=True,
+                collate_fn=types.transitions_collate_fn,
+            )
+            self.set_expert_data_loader(data_loader)
+            self._last_loaded_round = self.round_num
+
+    def train(self,
+        *,
+        n_epochs: Optional[int] = None,
+        n_batches: Optional[int] = None,
+        on_epoch_end: Callable[[], None] = None,
+        on_batch_end: Callable[[], None] = None,
+        log_interval: int = 100,
+    ) -> None:
         """
         Update policy using the currently gathered
         rollout buffer.
@@ -313,6 +414,10 @@ class PPO(OnPolicyAlgorithm):
         # Optional: clip range for the value function
         if self.clip_range_vf is not None:
             clip_range_vf = self.clip_range_vf(self._current_progress_remaining)
+
+
+
+
 
         entropy_losses, all_kl_divs = [], []
         pg_losses, value_losses = [], []
@@ -404,53 +509,72 @@ class PPO(OnPolicyAlgorithm):
                     approx_kl_divs.append(th.mean(rollout_data.old_log_prob - log_prob).detach().cpu().numpy())
 
                 if self.dagger:
-                    batch_size = 32
-                    transitions = {}
-                    transitions['acts'] = actions.detach().cpu().numpy()
-                    transitions['obs'] = rollout_data.observations.detach().cpu().numpy()
+                    #batch_size = 32
+                    #transitions = {}
+                    #transitions['acts'] = actions.detach().cpu().numpy()
+                    #transitions['obs'] = rollout_data.observations.detach().cpu().numpy()
 
-                    values, log_prob, entropy = self.policy.evaluate_actions(rollout_data.observations, actions)
-
-                    prob_true_act = th.exp(log_prob).mean()
-                    log_prob = log_prob.mean()
-                    entropy = entropy.mean()
-
-                    l2_norms = [th.sum(th.square(w)) for w in self.policy.parameters()]
-                    l2_norm = sum(l2_norms) / 2  # divide by 2 to cancel with gradient of square
-
-                    #TODO: MOVE THIS
-                    self.ent_weight = 1e-3
-                    self.l2_weight = 0
-
-                    ent_loss = -self.ent_weight * entropy
-                    neglogp = -log_prob
-                    l2_loss = self.l2_weight * l2_norm
-                    loss = neglogp + ent_loss + l2_loss
-
-                    self.policy.optimizer.zero_grad()
-                    loss.backward()
-                    self.policy.optimizer.step()
-
-                    stats_dict = dict(
-                        neglogp=neglogp.item(),
-                        loss=loss.item(),
-                        entropy=entropy.item(),
-                        ent_loss=ent_loss.item(),
-                        prob_true_act=prob_true_act.item(),
-                        l2_norm=l2_norm.item(),
-                        l2_loss=l2_loss.item(),
+                    it = EpochOrBatchIteratorWithProgress(
+                        self.expert_data_loader,
+                        n_epochs=self.n_epochs,
+                        n_batches=n_batches,
+                        on_epoch_end=on_epoch_end,
+                        on_batch_end=on_batch_end,
                     )
 
-                    """
-                    if batch_num % 1 == 0:
-                        for stats in [stats_dict_it, stats_dict_loss]:
-                            for k, v in stats.items():
-                                logger.record(k, v)
-                        logger.dump(batch_num)
-                    batch_num += 1
-                    """
-                    batch_num += 1
-                    print(batch_num)
+                    batch_num = 0
+                    for batch, stats_dict_it in it:
+
+                        obs = th.as_tensor(batch["obs"], device=self.device).detach()
+                        acts = th.as_tensor(batch["acts"], device=self.device).detach()
+
+                        values, log_prob, entropy = self.policy.evaluate_actions(obs,acts)
+
+                        prob_true_act = th.exp(log_prob).mean()
+                        log_prob = log_prob.mean()
+                        entropy = entropy.mean()
+
+                        l2_norms = [th.sum(th.square(w)) for w in self.policy.parameters()]
+                        l2_norm = sum(l2_norms) / 2  # divide by 2 to cancel with gradient of square
+
+                        #TODO: MOVE THIS
+                        self.ent_weight = 1e-3
+                        self.l2_weight = 0
+
+                        ent_loss = -self.ent_weight * entropy
+                        neglogp = -log_prob
+                        l2_loss = self.l2_weight * l2_norm
+                        loss = neglogp + ent_loss + l2_loss
+
+                        self.policy.optimizer.zero_grad()
+                        loss.backward()
+                        self.policy.optimizer.step()
+
+
+
+
+                        print(batch_num)
+
+                        stats_dict_loss = dict(
+                            neglogp=neglogp.item(),
+                            loss=loss.item(),
+                            entropy=entropy.item(),
+                            ent_loss=ent_loss.item(),
+                            prob_true_act=prob_true_act.item(),
+                            l2_norm=l2_norm.item(),
+                            l2_loss=l2_loss.item(),
+                        )
+
+                        if batch_num % log_interval == 0:
+                            for stats in [stats_dict_it, stats_dict_loss]:
+                                for k, v in stats.items():
+                                    logger.record(k, v)
+                            logger.dump(batch_num)
+                        batch_num += 1
+
+                        print(batch_num)
+
+
             if self.ppo:
                 all_kl_divs.append(np.mean(approx_kl_divs))
 
@@ -483,6 +607,7 @@ class PPO(OnPolicyAlgorithm):
         self,
         total_timesteps: int,
         callback: MaybeCallback = None,
+        save_path: str = None,
         log_interval: int = 1,
         eval_env: Optional[GymEnv] = None,
         eval_freq: int = -1,
@@ -502,4 +627,5 @@ class PPO(OnPolicyAlgorithm):
             tb_log_name=tb_log_name,
             eval_log_path=eval_log_path,
             reset_num_timesteps=reset_num_timesteps,
+            save_path = save_path,
         )
