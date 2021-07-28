@@ -485,7 +485,7 @@ class PPO(OnPolicyAlgorithm):
                     batch_num += 1
 
                     print(batch_num)
-                    print(batch_num)
+
 
             if not self.dagger:
                 # Do a complete pass on the rollout buffer
@@ -599,6 +599,22 @@ class PPO(OnPolicyAlgorithm):
             logger.record("train/clip_range", clip_range)
             if self.clip_range_vf is not None:
                 logger.record("train/clip_range_vf", clip_range_vf)
+
+            # Get expert samples to compute MSE Imitation loss
+            expert_samples = batch #self._next_expert_batch()
+            with th.no_grad():
+                # Compute value for the last timestep
+                obs_tensor = th.as_tensor(expert_samples['obs']).to(self.device)
+                actions_tensor = th.as_tensor(expert_samples['acts']).to(self.device)
+                actions, values, log_prob = self.policy.forward(obs_tensor, deterministic=True)
+
+            # np_actions = actions.detach().numpy()
+            np_actions = actions.detach().cpu().numpy()
+            np_exp_actions = expert_samples['acts'].detach().numpy()
+
+            mse = np.mean(np.abs(np_actions - np_exp_actions))
+
+            logger.record("train/mse_last_batch", mse)
 
     def learn(
         self,

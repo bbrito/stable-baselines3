@@ -252,10 +252,12 @@ class OnPolicyAlgorithm(BaseAlgorithm):
                 clipped_actions = np.clip(actions, self.action_space.low, self.action_space.high)
                 clipped_expert_actions = np.clip(np.expand_dims(expert_action,axis=0), self.action_space.low, self.action_space.high)
 
+            next_obs, reward, done, info = env.step(clipped_actions)
+            self._last_obs = next_obs
+
             if self.dagger:
                 # actually step the env & record data as appropriate
-                next_obs, reward, done, info = env.step(clipped_actions)
-                self._last_obs = next_obs
+
                 self.traj_accum.add_step(
                     {"acts": np.squeeze(clipped_expert_actions), "obs": np.squeeze(next_obs), "rews": np.squeeze(reward), "infos": info}
                 )
@@ -278,6 +280,7 @@ class OnPolicyAlgorithm(BaseAlgorithm):
             if callback.on_step() is False:
                 return False
 
+            # where reward is saved
             self._update_info_buffer(info)
             n_steps += 1
 
@@ -372,7 +375,7 @@ class OnPolicyAlgorithm(BaseAlgorithm):
 
             self.train(n_epochs = 1)
             #self.round_num += 1
-            print(self.round_num)
+            print("training round: ", self.round_num)
 
 
 
