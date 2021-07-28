@@ -10,7 +10,7 @@ import os
 import logging
 import dataclasses
 
-from stable_baselines3.common import logger
+from stable_baselines3.common import logger, evaluation_old
 from stable_baselines3.common.base_class import BaseAlgorithm
 from stable_baselines3.common.buffers import RolloutBuffer
 from stable_baselines3.common.callbacks import BaseCallback
@@ -42,7 +42,29 @@ def _save_trajectory(
     np.savez_compressed(npz_path, **dataclasses.asdict(trajectory))
 
 
+def evaluate_policy(policy, env, seeds, log_dir=None, basename=None):
+    """
+    Evaluates the `policy` on a given `env` for a set of `seeds` and returns a list of rewards of all
+    rollouts. If `log_dir` and `basename` are given then a visualization of the rollout (as VegaLite
+    html) will be stored to the `log_dir`.
+    """
+    all_rewards = []
 
+    for seed in seeds:
+        env.seed(seed)
+        this_rewards, _ = evaluation_old.evaluate_policy(
+            policy, env, return_episode_rewards=True, n_eval_episodes=2
+        )
+        if log_dir is not None and basename is not None:
+            rollout_path = path.join(log_dir, "eval")
+            Path(rollout_path).mkdir(parents=True, exist_ok=True)
+            viz = env.render()
+            viz.properties(width=500, height=500).save(
+                path.join(rollout_path, f"{basename}-{seed}.html")
+            )
+        all_rewards += this_rewards
+
+    return all_rewards
 
 class OnPolicyAlgorithm(BaseAlgorithm):
     """
@@ -163,21 +185,9 @@ class OnPolicyAlgorithm(BaseAlgorithm):
         self._done_before = False
         self._is_reset = True
 
-    def reset(self) -> np.ndarray:
-        # reset the environment
-        self.traj_accum = rollout.TrajectoryAccumulator()
-        obs = self.env.reset()
-        self._last_obs = obs
-        self.traj_accum.add_step({"obs": np.squeeze(obs)})
-        self._done_before = False
-        self._is_reset = True
-        return obs
-
-
-
 
     def collect_rollouts(
-        self, env: VecEnv, callback: BaseCallback, rollout_buffer: RolloutBuffer, n_rollout_steps: int
+        self, env: VecEnv, callback: BaseCallback, rollout_buffer: RolloutBuffer, n_rollout_steps: int, global_step: int
     ) -> bool:
         """
         Collect rollouts using the current policy and fill a `RolloutBuffer`.
@@ -192,8 +202,8 @@ class OnPolicyAlgorithm(BaseAlgorithm):
         """
         assert self._last_obs is not None, "No previous observation was provided"
         n_steps = 0
-        #if not self.dagger:
         rollout_buffer.reset()
+
         # Sample new weights for the state dependent exploration
         if self.use_sde:
             self.policy.reset_noise(env.num_envs)
@@ -201,10 +211,10 @@ class OnPolicyAlgorithm(BaseAlgorithm):
         callback.on_rollout_start()
         expert_pol = env.expert_policy
 
-        round_num = None
-        self.round_num = 0
-        if round_num is None:
-            round_num = self.round_num
+
+
+        round_num = global_step
+        self.round_num = round_num
         self.save_path_round = os.path.join(self.save_path , "demos", f"round-{round_num:03d}")
 
         while n_steps < n_rollout_steps:
@@ -213,6 +223,7 @@ class OnPolicyAlgorithm(BaseAlgorithm):
             if self.use_sde and self.sde_sample_freq > 0 and n_steps % self.sde_sample_freq == 0:
                 # Sample a new noise matrix
                 self.policy.reset_noise(env.num_envs)
+
 
             (expert_action,), _ = expert_pol.predict(
                 self._last_obs,
@@ -226,13 +237,13 @@ class OnPolicyAlgorithm(BaseAlgorithm):
 
             policy_action = policy_action_th.cpu().numpy()
 
-            # dagger
-            # Replace the given action with a robot action 100*(1-beta)% of the time.
-            self.beta = min(1, max(0, (self.rampdown_rounds - env.unwrapped.envs[0].env.episode_num) / self.rampdown_rounds))
-            if np.random.uniform(0, 1) > self.beta:
-                actions = policy_action
-            else:
-                actions = np.expand_dims(expert_action,axis=0)
+            if self.dagger:
+                # Replace the given action with a robot action 100*(1-beta)% of the time.
+                self.beta = min(1, max(0, (self.rampdown_rounds - env.unwrapped.envs[0].env.episode_num) / self.rampdown_rounds))
+                if np.random.uniform(0, 1) > self.beta:
+                    actions = policy_action
+                else:
+                    actions = np.expand_dims(expert_action,axis=0)
 
             # Rescale and perform action
             clipped_actions = actions
@@ -241,31 +252,24 @@ class OnPolicyAlgorithm(BaseAlgorithm):
                 clipped_actions = np.clip(actions, self.action_space.low, self.action_space.high)
                 clipped_expert_actions = np.clip(np.expand_dims(expert_action,axis=0), self.action_space.low, self.action_space.high)
 
-            # actually step the env & record data as appropriate
-            next_obs, reward, done, info = env.step(clipped_actions)
-            self._last_obs = next_obs
-            self.traj_accum.add_step(
-                {"acts": np.squeeze(clipped_expert_actions), "obs": np.squeeze(next_obs), "rews": np.squeeze(reward), "infos": info}
-            )
-
-            # if we're finished, then save the trajectory & print a message
-            if done and not self._done_before:
-                trajectory = self.traj_accum.finish_trajectory()
-                timestamp = make_unique_timestamp()
-                trajectory_path = os.path.join(
-                    self.save_path_round, "dagger-gail-demo-" + timestamp + ".npz"
+            if self.dagger:
+                # actually step the env & record data as appropriate
+                next_obs, reward, done, info = env.step(clipped_actions)
+                self._last_obs = next_obs
+                self.traj_accum.add_step(
+                    {"acts": np.squeeze(clipped_expert_actions), "obs": np.squeeze(next_obs), "rews": np.squeeze(reward), "infos": info}
                 )
-                logging.info(f"Saving demo at '{trajectory_path}'")
-                _save_trajectory(trajectory_path, trajectory)
 
+                # if we're finished, then save the trajectory & print a message
+                if done and not self._done_before:
+                    trajectory = self.traj_accum.finish_trajectory()
+                    timestamp = make_unique_timestamp()
+                    trajectory_path = os.path.join(
+                        self.save_path_round, "dagger-gail-demo-" + timestamp + ".npz"
+                    )
+                    logging.info(f"Saving demo at '{trajectory_path}'")
+                    _save_trajectory(trajectory_path, trajectory)
 
-
-
-
-
-
-
-            #new_obs, rewards, dones, infos = env.step(clipped_actions)
 
             self.num_timesteps += env.num_envs
 
@@ -284,7 +288,7 @@ class OnPolicyAlgorithm(BaseAlgorithm):
             self._last_obs = next_obs
             self._last_dones = done
 
-            if done:
+            if done and self.dagger:
                 # record the fact that we're already done to avoid saving demo over and
                 # over until the user resets
                 self._done_before = True
@@ -326,6 +330,7 @@ class OnPolicyAlgorithm(BaseAlgorithm):
         eval_log_path: Optional[str] = None,
         reset_num_timesteps: bool = True,
         save_path: str = None,
+        global_step: int = 0,
     ) -> "OnPolicyAlgorithm":
         iteration = 0
 
@@ -338,7 +343,7 @@ class OnPolicyAlgorithm(BaseAlgorithm):
         while self.num_timesteps < total_timesteps:
 
             #self.reset()
-            continue_training = self.collect_rollouts(self.env, callback, self.rollout_buffer, n_rollout_steps=self.n_steps)
+            continue_training = self.collect_rollouts(self.env, callback, self.rollout_buffer, n_rollout_steps=self.n_steps, global_step=global_step)
 
             if continue_training is False:
                 break
@@ -350,9 +355,9 @@ class OnPolicyAlgorithm(BaseAlgorithm):
             if log_interval is not None and iteration % log_interval == 0:
                 fps = int(self.num_timesteps / (time.time() - self.start_time))
                 logger.record("time/iterations", iteration, exclude="tensorboard")
-                if len(self.ep_info_buffer) > 0 and len(self.ep_info_buffer[0]) > 0:
-                    logger.record("rollout/ep_rew_mean", safe_mean([ep_info["r"] for ep_info in self.ep_info_buffer]))
-                    logger.record("rollout/ep_len_mean", safe_mean([ep_info["l"] for ep_info in self.ep_info_buffer]))
+                #if len(self.ep_info_buffer) > 0 and len(self.ep_info_buffer[0]) > 0:
+                logger.record("rollout/ep_rew_mean", safe_mean([ep_info["r"] for ep_info in self.ep_info_buffer]))
+                logger.record("rollout/ep_len_mean", safe_mean([ep_info["l"] for ep_info in self.ep_info_buffer]))
                 logger.record("time/fps", fps)
                 logger.record("time/time_elapsed", int(time.time() - self.start_time), exclude="tensorboard")
                 logger.record("time/total_timesteps", self.num_timesteps, exclude="tensorboard")
@@ -365,7 +370,10 @@ class OnPolicyAlgorithm(BaseAlgorithm):
             self.expert_data_loader: Optional[Iterable[Mapping]] = None
             self._try_load_demos()
 
-            self.train()
+            self.train(n_epochs = 1)
+            #self.round_num += 1
+
+
 
         callback.on_training_end()
 
