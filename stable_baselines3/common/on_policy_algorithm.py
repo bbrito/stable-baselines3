@@ -372,6 +372,7 @@ class OnPolicyAlgorithm(BaseAlgorithm):
 
             self.train(n_epochs = 1)
             #self.round_num += 1
+            print(self.round_num)
 
 
 
