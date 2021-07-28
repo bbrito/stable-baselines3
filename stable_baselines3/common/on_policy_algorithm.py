@@ -213,6 +213,8 @@ class OnPolicyAlgorithm(BaseAlgorithm):
         callback.on_rollout_start()
         expert_pol = env.expert_policy
 
+
+
         round_num = global_step
         self.round_num = round_num
         self.save_path_round = os.path.join(self.save_path , "demos", f"round-{round_num:03d}")
@@ -354,7 +356,9 @@ class OnPolicyAlgorithm(BaseAlgorithm):
 
             self.train(n_epochs = 1)
             #self.round_num += 1
-            print(self.round_num)
+            print("training round: ", self.round_num)
+
+
 
         callback.on_training_end()
 
