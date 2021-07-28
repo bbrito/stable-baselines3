@@ -213,8 +213,6 @@ class OnPolicyAlgorithm(BaseAlgorithm):
         callback.on_rollout_start()
         expert_pol = env.expert_policy
 
-
-
         round_num = global_step
         self.round_num = round_num
         self.save_path_round = os.path.join(self.save_path , "demos", f"round-{round_num:03d}")
