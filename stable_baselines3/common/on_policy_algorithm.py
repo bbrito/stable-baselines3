@@ -178,12 +178,12 @@ class OnPolicyAlgorithm(BaseAlgorithm):
         )
         self.policy = self.policy.to(self.device)
 
-        self.traj_accum = rollout.TrajectoryAccumulator()
-        obs = self.env.reset()
-        self._last_obs = obs
-        self.traj_accum.add_step({"obs": np.squeeze(obs)})
-        self._done_before = False
-        self._is_reset = True
+        # todo: not sure about the reset here. to check
+        #obs = self.env.reset()
+        #self._last_obs = obs
+        #self.traj_accum.add_step({"obs": np.squeeze(obs)})
+        #self._done_before = False
+        #self._is_reset = True
 
 
     def collect_rollouts(
@@ -204,14 +204,14 @@ class OnPolicyAlgorithm(BaseAlgorithm):
         n_steps = 0
         rollout_buffer.reset()
 
+        self.traj_accum = self.env.venv.venv.venv._traj_accum#rollout.TrajectoryAccumulator()
+
         # Sample new weights for the state dependent exploration
         if self.use_sde:
             self.policy.reset_noise(env.num_envs)
 
         callback.on_rollout_start()
         expert_pol = env.expert_policy
-
-
 
         round_num = global_step
         self.round_num = round_num
@@ -224,12 +224,12 @@ class OnPolicyAlgorithm(BaseAlgorithm):
                 # Sample a new noise matrix
                 self.policy.reset_noise(env.num_envs)
 
-
+            # Query expert action
             (expert_action,), _ = expert_pol.predict(
                 self._last_obs,
                 deterministic=True,
             )
-
+            # Query policy action
             with th.no_grad():
                 # Convert to pytorch tensor
                 obs_tensor = th.as_tensor(self._last_obs).to(self.device)
@@ -252,23 +252,17 @@ class OnPolicyAlgorithm(BaseAlgorithm):
                 clipped_actions = np.clip(actions, self.action_space.low, self.action_space.high)
                 clipped_expert_actions = np.clip(np.expand_dims(expert_action,axis=0), self.action_space.low, self.action_space.high)
 
-            if self.dagger:
-                # actually step the env & record data as appropriate
-                next_obs, reward, done, info = env.step(clipped_actions)
-                self._last_obs = next_obs
-                self.traj_accum.add_step(
-                    {"acts": np.squeeze(clipped_expert_actions), "obs": np.squeeze(next_obs), "rews": np.squeeze(reward), "infos": info}
-                )
+            # actually step the env : rewrad is changed twise. it is normalized and this is the valaue from the discriminator network. the real env reward in in info
+            next_obs, reward, done, info = env.step(clipped_actions)
+            self._last_obs = next_obs
 
-                # if we're finished, then save the trajectory & print a message
-                if done and not self._done_before:
-                    trajectory = self.traj_accum.finish_trajectory()
-                    timestamp = make_unique_timestamp()
-                    trajectory_path = os.path.join(
-                        self.save_path_round, "dagger-gail-demo-" + timestamp + ".npz"
-                    )
-                    logging.info(f"Saving demo at '{trajectory_path}'")
-                    _save_trajectory(trajectory_path, trajectory)
+            if self.dagger and done:
+                timestamp = make_unique_timestamp()
+                trajectory_path = os.path.join(
+                    self.save_path_round, "dagger-gail-demo-" + timestamp + ".npz"
+                )
+                logging.info(f"Saving demo at '{trajectory_path}'")
+                _save_trajectory(trajectory_path, self.env.venv.venv.venv._trajectories[-1])
 
 
             self.num_timesteps += env.num_envs
@@ -287,18 +281,6 @@ class OnPolicyAlgorithm(BaseAlgorithm):
             rollout_buffer.add(self._last_obs, actions, reward, self._last_dones, values, log_probs)
             self._last_obs = next_obs
             self._last_dones = done
-
-            if done and self.dagger:
-                # record the fact that we're already done to avoid saving demo over and
-                # over until the user resets
-                self._done_before = True
-                # reset the environment
-                self.traj_accum = rollout.TrajectoryAccumulator()
-                obs = env.venv.envs[0].env.reset()
-                self._last_obs = np.expand_dims(obs,axis=0)
-                self.traj_accum.add_step({"obs": np.squeeze(obs)})
-                self._done_before = False
-                self._is_reset = True
 
         with th.no_grad():
             # Compute value for the last timestep
@@ -373,8 +355,6 @@ class OnPolicyAlgorithm(BaseAlgorithm):
             self.train(n_epochs = 1)
             #self.round_num += 1
             print(self.round_num)
-
-
 
         callback.on_training_end()
 

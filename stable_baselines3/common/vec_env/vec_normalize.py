@@ -125,6 +125,7 @@ class VecNormalize(VecEnvWrapper):
 
         if self.training:
             self._update_reward(rews)
+        # TODO: REWARD IS CHANGED
         rews = self.normalize_reward(rews)
 
         self.ret[news] = 0

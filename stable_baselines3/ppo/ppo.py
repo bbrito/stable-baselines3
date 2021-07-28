@@ -484,9 +484,6 @@ class PPO(OnPolicyAlgorithm):
                         logger.dump(batch_num)
                     batch_num += 1
 
-                    print(batch_num)
-                    print(batch_num)
-
             if not self.dagger:
                 # Do a complete pass on the rollout buffer
                 for rollout_data in self.rollout_buffer.get(self.batch_size):
