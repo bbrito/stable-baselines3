@@ -110,6 +110,16 @@ class VecNormalize(VecEnvWrapper):
 
         where 'news' is a boolean vector indicating whether each element is new.
         """
+        self.venv.ret_rms = self.ret_rms
+        self.venv.epsilon = self.epsilon
+        self.venv.clip_reward = self.clip_reward
+        self.venv.clip_obs = self.clip_obs
+        self.venv.obs_rms = self.obs_rms
+        self.venv.ret = self.ret
+        self.venv.gamma = self.gamma
+        self.venv.training = self.training
+
+
         obs, rews, news, infos = self.venv.step_wait()
         self.old_obs = obs
         self.old_reward = rews
@@ -123,10 +133,14 @@ class VecNormalize(VecEnvWrapper):
 
         obs = self.normalize_obs(obs)
 
+
+
         if self.training:
             self._update_reward(rews)
-        # TODO: REWARD IS CHANGED
+            # TODO: REWARD IS CHANGED
         rews = self.normalize_reward(rews)
+
+
 
         self.ret[news] = 0
         return obs, rews, news, infos
@@ -212,6 +226,9 @@ class VecNormalize(VecEnvWrapper):
         Reset all environments
         :return: first observation of the episode
         """
+        self.venv.epsilon = self.epsilon
+        self.venv.clip_obs = self.clip_obs
+        self.venv.obs_rms = self.obs_rms
         obs = self.venv.reset()
         self.old_obs = obs
         self.ret = np.zeros(self.num_envs)
