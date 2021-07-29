@@ -211,6 +211,10 @@ class VecNormalize(VecEnvWrapper):
         if not news:
             self.venv._traj_accum.partial_trajectories[0][-1]['rews'] = float(rews)
             self.venv._traj_accum.partial_trajectories[0][-1]['obs'] = np.squeeze(obs)
+        if news:
+            self.venv._trajectories[0].rews[-1] = float(rews)
+            self.venv._trajectories[0].obs[-1] = np.squeeze(obs)
+
         #finished_trajs = self.venv._traj_accum.add_steps_and_auto_finish(
         #    self.venv.acts, obs, rews, news, infos
         #)

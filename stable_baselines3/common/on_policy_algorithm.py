@@ -216,6 +216,8 @@ class OnPolicyAlgorithm(BaseAlgorithm):
         round_num = global_step
         self.round_num = round_num
         self.save_path_round = os.path.join(self.save_path , "demos", f"round-{round_num:03d}")
+        col_obs = np.zeros((1,8))
+        col_rews = np.zeros((1,))
 
         while n_steps < n_rollout_steps:
 
@@ -255,6 +257,8 @@ class OnPolicyAlgorithm(BaseAlgorithm):
             # actually step the env : rewrad is changed twise. it is normalized and this is the valaue from the discriminator network. the real env reward in in info
             next_obs, reward, done, info = env.step(clipped_actions)
             self._last_obs = next_obs
+            col_obs = np.concatenate((col_obs, next_obs), axis=0)
+            col_rews = np.concatenate((col_rews, reward),axis=0)
 
             if self.dagger and done:
                 timestamp = make_unique_timestamp()
@@ -262,7 +266,8 @@ class OnPolicyAlgorithm(BaseAlgorithm):
                     self.save_path_round, "dagger-gail-demo-" + timestamp + ".npz"
                 )
                 logging.info(f"Saving demo at '{trajectory_path}'")
-                _save_trajectory(trajectory_path, self.env.venv.venv.venv._trajectories[-1])
+                collected_traj = self.env.venv.venv.venv._trajectories
+                _save_trajectory(trajectory_path, collected_traj[-1])
 
 
             self.num_timesteps += env.num_envs
