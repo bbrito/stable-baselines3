@@ -1,13 +1,77 @@
 import pickle
 from copy import deepcopy
-from typing import Any, Dict, Union
+from typing import Any, Dict, Union, List
 
 import gym
 import numpy as np
+import copy
 
 from stable_baselines3.common import utils
 from stable_baselines3.common.running_mean_std import RunningMeanStd
 from stable_baselines3.common.vec_env.base_vec_env import VecEnv, VecEnvStepReturn, VecEnvWrapper
+from imitation.data import types
+
+
+def add_steps_and_auto_finish(
+        self,
+        acts: np.ndarray,
+        obs: np.ndarray,
+        rews: np.ndarray,
+        dones: np.ndarray,
+        infos: List[dict],
+) -> List[types.TrajectoryWithRew]:
+    """Calls `add_step` repeatedly using acts and the returns from `venv.step`.
+
+    Also automatically calls `finish_trajectory()` for each `done == True`.
+    Before calling this method, each environment index key needs to be
+    initialized with the initial observation (usually from `venv.reset()`).
+
+    See the body of `util.rollout.generate_trajectory` for an example.
+
+    Args:
+        acts: Actions passed into `VecEnv.step()`.
+        obs: Return value from `VecEnv.step(acts)`.
+        rews: Return value from `VecEnv.step(acts)`.
+        dones: Return value from `VecEnv.step(acts)`.
+        infos: Return value from `VecEnv.step(acts)`.
+    Returns:
+        A list of completed trajectories. There should be one trajectory for
+        each `True` in the `dones` argument.
+    """
+    trajs = []
+    for env_idx in range(len(obs)):
+        assert env_idx in self.partial_trajectories
+        assert list(self.partial_trajectories[env_idx][0].keys()) == ["obs"], (
+            "Need to first initialize partial trajectory using "
+            "self._traj_accum.add_step({'obs': ob}, key=env_idx)"
+        )
+
+    zip_iter = enumerate(zip(acts, obs, rews, dones, infos))
+    for env_idx, (act, ob, rew, done, info) in zip_iter:
+        if done:
+            # actual obs is inaccurate, so we use the one inserted into step info
+            # by stable baselines wrapper
+            real_ob = info["terminal_observation"]
+        else:
+            real_ob = ob
+
+        self.add_step(
+            dict(
+                acts=act,
+                rews=rew,
+                # this is not the obs corresponding to `act`, but rather the obs
+                # *after* `act` (see above)
+                obs=real_ob,
+                infos=info,
+            ),
+            env_idx,
+        )
+        if done:
+            # finish env_idx-th trajectory
+            new_traj = self.finish_trajectory(env_idx)
+            trajs.append(new_traj)
+            self.add_step(dict(obs=ob), env_idx)
+    return trajs
 
 
 class VecNormalize(VecEnvWrapper):
@@ -110,14 +174,15 @@ class VecNormalize(VecEnvWrapper):
 
         where 'news' is a boolean vector indicating whether each element is new.
         """
-        self.venv.ret_rms = self.ret_rms
+        self.venv.ret_rms = copy.copy(self.ret_rms)
         self.venv.epsilon = self.epsilon
         self.venv.clip_reward = self.clip_reward
         self.venv.clip_obs = self.clip_obs
-        self.venv.obs_rms = self.obs_rms
-        self.venv.ret = self.ret
+        self.venv.obs_rms = copy.copy(self.obs_rms)
+        self.venv.ret = copy.copy(self.ret)
         self.venv.gamma = self.gamma
         self.venv.training = self.training
+        self.venv.norm_reward = self.norm_reward
 
 
         obs, rews, news, infos = self.venv.step_wait()
@@ -143,6 +208,14 @@ class VecNormalize(VecEnvWrapper):
 
 
         self.ret[news] = 0
+        if not news:
+            self.venv._traj_accum.partial_trajectories[0][-1]['rews'] = float(rews)
+            self.venv._traj_accum.partial_trajectories[0][-1]['obs'] = np.squeeze(obs)
+        #finished_trajs = self.venv._traj_accum.add_steps_and_auto_finish(
+        #    self.venv.acts, obs, rews, news, infos
+        #)
+        #self.venv._trajectories.extend(finished_trajs)
+        #self.venv.n_transitions += self.venv.num_envs
         return obs, rews, news, infos
 
     def _update_reward(self, reward: np.ndarray) -> None:
