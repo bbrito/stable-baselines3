@@ -409,6 +409,8 @@ class PPO(OnPolicyAlgorithm):
         """
         # Update optimizer learning rate
         self._update_learning_rate(self.policy.optimizer)
+        # hyperparameter
+        self.policy.optimizer.param_groups[0]["eps"] = 1e-08
         # Compute current clip range
         clip_range = self.clip_range(self._current_progress_remaining)
         # Optional: clip range for the value function
@@ -456,7 +458,7 @@ class PPO(OnPolicyAlgorithm):
 
                     # TODO: MOVE THIS
                     self.ent_weight = 1e-3
-                    self.l2_weight = 0
+                    self.l2_weight = 0.0
 
                     ent_loss = -self.ent_weight * entropy
                     neglogp = -log_prob
