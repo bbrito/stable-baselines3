@@ -204,7 +204,7 @@ class OnPolicyAlgorithm(BaseAlgorithm):
         n_steps = 0
         rollout_buffer.reset()
 
-        self.traj_accum = self.env.venv.venv.venv._traj_accum#rollout.TrajectoryAccumulator()
+        #self.traj_accum = self.env.venv.venv.venv._traj_accum#rollout.TrajectoryAccumulator()
 
         # Sample new weights for the state dependent exploration
         if self.use_sde:
@@ -218,6 +218,14 @@ class OnPolicyAlgorithm(BaseAlgorithm):
         self.save_path_round = os.path.join(self.save_path , "demos", f"round-{round_num:03d}")
         col_obs = np.zeros((1,8))
         col_rews = np.zeros((1,))
+
+        if self.dagger:
+            dagger_env = env.unwrapped.envs[0].env
+            self.traj_accum = rollout.TrajectoryAccumulator()
+            obs = dagger_env.reset()
+            obs = np.expand_dims(obs,axis=0)
+            self._last_obs = obs
+            self.traj_accum.add_step({"obs": obs})
 
         while n_steps < n_rollout_steps:
 
@@ -245,7 +253,7 @@ class OnPolicyAlgorithm(BaseAlgorithm):
                 if np.random.uniform(0, 1) > self.beta:
                     actions = policy_action
                 else:
-                    actions = np.expand_dims(expert_action,axis=0)
+                    actions = expert_action
 
             # Rescale and perform action
             clipped_actions = actions
@@ -255,19 +263,28 @@ class OnPolicyAlgorithm(BaseAlgorithm):
                 clipped_expert_actions = np.clip(np.expand_dims(expert_action,axis=0), self.action_space.low, self.action_space.high)
 
             # actually step the env : rewrad is changed twise. it is normalized and this is the valaue from the discriminator network. the real env reward in in info
-            next_obs, reward, done, info = env.step(clipped_actions)
-            self._last_obs = next_obs
-            col_obs = np.concatenate((col_obs, next_obs), axis=0)
-            col_rews = np.concatenate((col_rews, reward),axis=0)
+            if self.dagger:
+                # actually step the env & record data as appropriate
+                next_obs, reward, done, info = dagger_env.step(clipped_actions)
+                next_obs = np.expand_dims(next_obs, axis=0)
+                self._last_obs = next_obs
+                self.traj_accum.add_step(
+                    {"acts": clipped_expert_actions, "obs": next_obs, "rews": reward, "infos": info}
+                )
+            else:
+                next_obs, reward, done, info = env.step(clipped_actions)
+                self._last_obs = next_obs
+            #col_obs = np.concatenate((col_obs, next_obs), axis=0)
+            #col_rews = np.concatenate((col_rews, reward),axis=0)
 
             if self.dagger and done:
+                trajectory = self.traj_accum.finish_trajectory()
                 timestamp = make_unique_timestamp()
                 trajectory_path = os.path.join(
                     self.save_path_round, "dagger-gail-demo-" + timestamp + ".npz"
                 )
                 logging.info(f"Saving demo at '{trajectory_path}'")
-                collected_traj = self.env.venv.venv.venv._trajectories
-                _save_trajectory(trajectory_path, collected_traj[-1])
+                _save_trajectory(trajectory_path, trajectory)
 
 
             self.num_timesteps += env.num_envs
