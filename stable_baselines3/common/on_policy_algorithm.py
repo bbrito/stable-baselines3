@@ -239,16 +239,9 @@ class OnPolicyAlgorithm(BaseAlgorithm):
 
             policy_action = policy_action_th.cpu().numpy()
 
-            if self.dagger:
-                # Replace the given action with a robot action 100*(1-beta)% of the time.
-                self.beta = min(1, max(0, (self.rampdown_rounds - self.round_num) / self.rampdown_rounds))
-                if np.random.uniform(0, 1) > self.beta:
-                    actions = policy_action
-                else:
-                    actions = np.expand_dims(expert_action,axis=0)
-
             # Rescale and perform action
-            clipped_actions = actions
+            actions = policy_action
+            clipped_actions = policy_action
             # Clip the actions to avoid out of bound error
             if isinstance(self.action_space, gym.spaces.Box):
                 clipped_actions = np.clip(actions, self.action_space.low, self.action_space.high)
@@ -256,26 +249,6 @@ class OnPolicyAlgorithm(BaseAlgorithm):
 
             next_obs, reward, done, info = env.step(clipped_actions)
             self._last_obs = info[0]['original_ob']
-
-            if self.dagger and done:
-                self.traj_accum.add_step(
-                    {"acts": clipped_expert_actions, "obs": np.expand_dims(info[0]['terminal_observation'],0), "rews": info[0]['original_rw'],
-                     "infos": info}
-                )
-                trajectory = self.traj_accum.finish_trajectory()
-                timestamp = make_unique_timestamp()
-                trajectory_path = os.path.join(
-                    self.save_path_round, "dagger-gail-demo-" + timestamp + ".npz"
-                )
-                logging.info(f"Saving demo at '{trajectory_path}'")
-                _save_trajectory(trajectory_path, trajectory)
-                self.traj_accum = rollout.TrajectoryAccumulator()
-                self.traj_accum.add_step({"obs": info[0]['original_ob']})
-            elif not done:
-                self.traj_accum.add_step(
-                    {"acts": clipped_expert_actions, "obs": info[0]['original_ob'], "rews": info[0]['original_rw'],
-                     "infos": info}
-                )
 
 
             self.num_timesteps += env.num_envs
