@@ -178,14 +178,6 @@ class OnPolicyAlgorithm(BaseAlgorithm):
         )
         self.policy = self.policy.to(self.device)
 
-        # todo: not sure about the reset here. to check
-        #obs = self.env.reset()
-        #self._last_obs = obs
-        #self.traj_accum.add_step({"obs": np.squeeze(obs)})
-        #self._done_before = False
-        #self._is_reset = True
-
-
     def collect_rollouts(
         self, env: VecEnv, callback: BaseCallback, rollout_buffer: RolloutBuffer, n_rollout_steps: int, global_step: int
     ) -> bool:
@@ -220,12 +212,12 @@ class OnPolicyAlgorithm(BaseAlgorithm):
         col_rews = np.zeros((1,))
 
         if self.dagger:
-            dagger_env = env.unwrapped.envs[0].env
             self.traj_accum = rollout.TrajectoryAccumulator()
-            obs = dagger_env.reset()
-            obs = np.expand_dims(obs,axis=0)
-            self._last_obs = obs
-            self.traj_accum.add_step({"obs": obs})
+            self.traj_accum.add_step({"obs": self._last_obs})
+
+        self._last_obs = env.reset()
+        self.traj_accum = rollout.TrajectoryAccumulator()
+        self.traj_accum.add_step({"obs": self._last_obs})
 
         while n_steps < n_rollout_steps:
 
@@ -249,11 +241,11 @@ class OnPolicyAlgorithm(BaseAlgorithm):
 
             if self.dagger:
                 # Replace the given action with a robot action 100*(1-beta)% of the time.
-                self.beta = min(1, max(0, (self.rampdown_rounds - env.unwrapped.envs[0].env.episode_num) / self.rampdown_rounds))
+                self.beta = min(1, max(0, (self.rampdown_rounds - self.round_num) / self.rampdown_rounds))
                 if np.random.uniform(0, 1) > self.beta:
                     actions = policy_action
                 else:
-                    actions = expert_action
+                    actions = np.expand_dims(expert_action,axis=0)
 
             # Rescale and perform action
             clipped_actions = actions
@@ -262,22 +254,14 @@ class OnPolicyAlgorithm(BaseAlgorithm):
                 clipped_actions = np.clip(actions, self.action_space.low, self.action_space.high)
                 clipped_expert_actions = np.clip(np.expand_dims(expert_action,axis=0), self.action_space.low, self.action_space.high)
 
-            # actually step the env : rewrad is changed twise. it is normalized and this is the valaue from the discriminator network. the real env reward in in info
-            if self.dagger:
-                # actually step the env & record data as appropriate
-                next_obs, reward, done, info = dagger_env.step(clipped_actions)
-                next_obs = np.expand_dims(next_obs, axis=0)
-                self._last_obs = next_obs
-                self.traj_accum.add_step(
-                    {"acts": clipped_expert_actions, "obs": next_obs, "rews": reward, "infos": info}
-                )
-            else:
-                next_obs, reward, done, info = env.step(clipped_actions)
-                self._last_obs = next_obs
-            #col_obs = np.concatenate((col_obs, next_obs), axis=0)
-            #col_rews = np.concatenate((col_rews, reward),axis=0)
+            next_obs, reward, done, info = env.step(clipped_actions)
+            self._last_obs = info[0]['original_ob']
 
             if self.dagger and done:
+                self.traj_accum.add_step(
+                    {"acts": clipped_expert_actions, "obs": np.expand_dims(info[0]['terminal_observation'],0), "rews": info[0]['original_rw'],
+                     "infos": info}
+                )
                 trajectory = self.traj_accum.finish_trajectory()
                 timestamp = make_unique_timestamp()
                 trajectory_path = os.path.join(
@@ -285,6 +269,13 @@ class OnPolicyAlgorithm(BaseAlgorithm):
                 )
                 logging.info(f"Saving demo at '{trajectory_path}'")
                 _save_trajectory(trajectory_path, trajectory)
+                self.traj_accum = rollout.TrajectoryAccumulator()
+                self.traj_accum.add_step({"obs": info[0]['original_ob']})
+            elif not done:
+                self.traj_accum.add_step(
+                    {"acts": clipped_expert_actions, "obs": info[0]['original_ob'], "rews": info[0]['original_rw'],
+                     "infos": info}
+                )
 
 
             self.num_timesteps += env.num_envs
@@ -301,7 +292,7 @@ class OnPolicyAlgorithm(BaseAlgorithm):
                 # Reshape in case of discrete action
                 actions = actions.reshape(-1, 1)
             rollout_buffer.add(self._last_obs, actions, reward, self._last_dones, values, log_probs)
-            self._last_obs = next_obs
+            #self._last_obs = next_obs
             self._last_dones = done
 
         with th.no_grad():
