@@ -120,7 +120,8 @@ class OnPolicyAlgorithm(BaseAlgorithm):
         seed: Optional[int] = None,
         device: Union[th.device, str] = "auto",
         _init_setup_model: bool = True,
-        save_path: str = None,
+        supported_action_spaces: Optional[Tuple[gym.spaces.Space, ...]] = None,
+        #save_path: str = None,
     ):
 
         super(OnPolicyAlgorithm, self).__init__(
@@ -137,6 +138,7 @@ class OnPolicyAlgorithm(BaseAlgorithm):
             support_multi_env=True,
             seed=seed,
             tensorboard_log=tensorboard_log,
+            supported_action_spaces=supported_action_spaces,
         )
 
         self.n_steps = n_steps
@@ -148,7 +150,7 @@ class OnPolicyAlgorithm(BaseAlgorithm):
         self.rollout_buffer = None
         self.rampdown_rounds = 15
         self.traj_accum = None
-        self.save_path = save_path
+        #self.save_path = save_path
 
 
         if _init_setup_model:
@@ -207,13 +209,13 @@ class OnPolicyAlgorithm(BaseAlgorithm):
 
         round_num = global_step
         self.round_num = round_num
-        self.save_path_round = os.path.join(self.save_path , "demos", f"round-{round_num:03d}")
+        #self.save_path_round = os.path.join(self.save_path , "demos", f"round-{round_num:03d}")
         col_obs = np.zeros((1,8))
         col_rews = np.zeros((1,))
 
-        if self.dagger:
-            self.traj_accum = rollout.TrajectoryAccumulator()
-            self.traj_accum.add_step({"obs": self._last_obs})
+        #if self.dagger:
+        #    self.traj_accum = rollout.TrajectoryAccumulator()
+        #    self.traj_accum.add_step({"obs": self._last_obs})
 
         self._last_obs = env.reset()
         self.traj_accum = rollout.TrajectoryAccumulator()
@@ -322,23 +324,24 @@ class OnPolicyAlgorithm(BaseAlgorithm):
             # Display training infos
             if log_interval is not None and iteration % log_interval == 0:
                 fps = int(self.num_timesteps / (time.time() - self.start_time))
-                logger.record("time/iterations", iteration, exclude="tensorboard")
-                #if len(self.ep_info_buffer) > 0 and len(self.ep_info_buffer[0]) > 0:
-                logger.record("rollout/ep_rew_mean", safe_mean([ep_info["r"] for ep_info in self.ep_info_buffer]))
-                logger.record("rollout/ep_len_mean", safe_mean([ep_info["l"] for ep_info in self.ep_info_buffer]))
-                logger.record("time/fps", fps)
-                logger.record("time/time_elapsed", int(time.time() - self.start_time), exclude="tensorboard")
-                logger.record("time/total_timesteps", self.num_timesteps, exclude="tensorboard")
-                logger.dump(step=self.num_timesteps)
+                self.logger.record("time/iterations", iteration, exclude="tensorboard")
+                if len(self.ep_info_buffer) > 0 and len(self.ep_info_buffer[0]) > 0:
+                    self.logger.record("rollout/ep_rew_mean", safe_mean([ep_info["r"] for ep_info in self.ep_info_buffer]))
+                    self.logger.record("rollout/ep_len_mean", safe_mean([ep_info["l"] for ep_info in self.ep_info_buffer]))
+                self.logger.record("time/fps", fps)
+                self.logger.record("time/time_elapsed", int(time.time() - self.start_time), exclude="tensorboard")
+                self.logger.record("time/total_timesteps", self.num_timesteps, exclude="tensorboard")
+                self.logger.dump(step=self.num_timesteps)
 
             # load expert data
             self._last_loaded_round = -1
             self.DEMO_SUFFIX = ".npz"
             self._all_demos = []
             self.expert_data_loader: Optional[Iterable[Mapping]] = None
-            self._try_load_demos()
+            #self._try_load_demos()
 
-            self.train(n_epochs = 1)
+            #self.train(n_epochs = 1)
+            self.train()
             #self.round_num += 1
             print("training round: ", self.round_num)
 

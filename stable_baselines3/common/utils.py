@@ -15,7 +15,7 @@ try:
 except ImportError:
     SummaryWriter = None
 
-from stable_baselines3.common import logger, logger_old
+from stable_baselines3.common import logger
 from stable_baselines3.common.type_aliases import GymEnv
 
 

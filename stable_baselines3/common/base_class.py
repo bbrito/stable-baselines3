@@ -100,6 +100,7 @@ class BaseAlgorithm(ABC):
         seed: Optional[int] = None,
         use_sde: bool = False,
         sde_sample_freq: int = -1,
+        supported_action_spaces: Optional[Tuple[gym.spaces.Space, ...]] = None,
     ):
 
         if isinstance(policy, str) and policy_base is not None:
@@ -160,6 +161,12 @@ class BaseAlgorithm(ABC):
             self.action_space = env.action_space
             self.n_envs = env.num_envs
             self.env = env
+
+            if supported_action_spaces is not None:
+                assert isinstance(self.action_space, supported_action_spaces), (
+                    f"The algorithm only supports {supported_action_spaces} as action spaces "
+                    f"but {self.action_space} was provided"
+                )
 
             if not support_multi_env and self.n_envs > 1:
                 raise ValueError(
