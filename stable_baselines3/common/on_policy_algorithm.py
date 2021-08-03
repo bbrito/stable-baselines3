@@ -22,6 +22,7 @@ from imitation.data import rollout,  types
 from stable_baselines3.common import utils
 from config import ImitationConfig
 
+logger = logging.getLogger(__name__)
 
 def make_unique_timestamp() -> str:
     """Timestamp, with random uuid added to avoid collisions."""
@@ -333,19 +334,8 @@ class OnPolicyAlgorithm(BaseAlgorithm):
                 self.logger.record("time/total_timesteps", self.num_timesteps, exclude="tensorboard")
                 self.logger.dump(step=self.num_timesteps)
 
-            # load expert data
-            self._last_loaded_round = -1
-            self.DEMO_SUFFIX = ".npz"
-            self._all_demos = []
-            self.expert_data_loader: Optional[Iterable[Mapping]] = None
-            #self._try_load_demos()
-
-            #self.train(n_epochs = 1)
             self.train()
-            #self.round_num += 1
             print("training round: ", self.round_num)
-
-
 
         callback.on_training_end()
 
