@@ -335,7 +335,7 @@ class OnPolicyAlgorithm(BaseAlgorithm):
                 self.logger.dump(step=self.num_timesteps)
 
             self.train()
-            print("training round: ", self.round_num)
+
 
         callback.on_training_end()
 
